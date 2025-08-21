@@ -1,11 +1,6 @@
 name: citra-build
 
-on:
-  push:
-    branches: [ "*" ]
-    tags: [ "*" ]
-  pull_request:
-    branches: [ master ]
+on: workflow_dispatch
 
 jobs:
   source:
