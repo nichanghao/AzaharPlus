@@ -1,6 +1,6 @@
 #!/bin/sh -ex
 
-mkdir build
+mkdir -p build
 cd build
 
 if [ "$GITHUB_REF_TYPE" == "tag" ]; then
