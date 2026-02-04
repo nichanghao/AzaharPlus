@@ -57,6 +57,12 @@ HackManager hack_manager = {
                      0x00040000001D1400, // USA
                      0x00040000001D1500, // EUR
                      0x00040000001CA900, // JPN
+
+                     // Mario & Luigi: Paper Jam
+                     0x0004000000132600, // JPN
+                     0x0004000000132700, // USA
+                     0x0004000000132800, // EUR
+                     0x000400000018A100, // EUR (Demo)
                  },
          }},
 
@@ -69,10 +75,13 @@ HackManager hack_manager = {
                      0x0004013000002C02, // Normal
                      0x0004013000002C03, // Safe mode
                      0x0004013020002C03, // New 3DS safe mode
+
+                     // DLP
+                     0x0004013000002802,
                  },
          }},
 
-//#ifdef todotodo
+#ifdef todotodo
         {HackType::ONLINE_LLE_REQUIRED,
          HackEntry{
              .mode = HackAllowMode::FORCE,
@@ -112,7 +121,7 @@ HackManager hack_manager = {
                  },
          }},
 //
-#ifdef todotodo
+//#ifdef todotodo
         {HackType::REGION_FROM_SECURE,
          HackEntry{
              .mode = HackAllowMode::FORCE,
@@ -162,6 +171,29 @@ HackManager hack_manager = {
          }},
 //
 #endif
+        {HackType::REQUIRES_SHADER_FIXUP,
+         HackEntry{
+             .mode = HackAllowMode::FORCE,
+             .affected_title_ids =
+                 {
+                     // 3D Thunder Blade
+                     0x0004000000128A00, // JPN
+                     0x0004000000158200, // EUR
+                     0x0004000000158C00, // USA
+
+                     // 3D After Burner II
+                     0x0004000000114200, // JPN
+                     0x0004000000157A00, // EUR
+                     0x0004000000158900, // USA
+
+                     // 3D Classics
+                     0x0004000000154000, // 1 (JPN)
+                     0x0004000000180E00, // 2 (JPN)
+                     0x000400000019A700, // 2 (EUR)
+                     0x0004000000185E00, // 2 (USA)
+                     0x00040000001AA300, // 3 (JPN)
+                 },
+         }},
 
     }};
 }

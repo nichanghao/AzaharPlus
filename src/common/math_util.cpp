@@ -1,3 +1,5 @@
+//FILE MODIFIED BY AzaharPlus OCTOBER 2025
+
 // Copyright Citra Emulator Project / Azahar Emulator Project
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
@@ -30,6 +32,9 @@ std::pair<u8, u8> FindMinMax(const std::span<const u8>& data) {
     const size_t count = data.size();
     const u8* data_ptr = data.data();
     u8 final_min, final_max;
+    final_min = 0xFF;
+    final_max = 0;
+	
 #if defined(CITRA_HAS_SSE42) || defined(CITRA_HAS_NEON)
     u8 simd_min = 0xFF;
     u8 simd_max = 0;
@@ -77,6 +82,7 @@ std::pair<u8, u8> FindMinMax(const std::span<const u8>& data) {
 
 #else
     // Scalar fallback
+
     for (size_t i = 0; i < count; ++i) {
         const u8 val = data_ptr[i];
         final_min = std::min(final_min, val);
@@ -91,6 +97,8 @@ std::pair<u16, u16> FindMinMax(const std::span<const u16>& data) {
     const size_t count = data.size();
     const u16* data_ptr = data.data();
     u16 final_min, final_max;
+    final_min = 0xFFFF;
+    final_max = 0;
 
 #if defined(CITRA_HAS_SSE42) || defined(CITRA_HAS_NEON)
     u16 simd_min = 0xFFFF;

@@ -121,6 +121,8 @@ option(ENABLE_MICROPROFILE "Enables microprofile capabilities" OFF)
 
 option(ENABLE_SSE42 "Enable SSE4.2 optimizations on x86_64" OFF)
 
+option(ENABLE_DEVELOPER_OPTIONS "Enable functionality targeted at emulator developers" OFF)
+
 # Compile options
 CMAKE_DEPENDENT_OPTION(COMPILE_WITH_DWARF "Add DWARF debugging information" ${IS_DEBUG_BUILD} "MINGW" OFF)
 option(ENABLE_LTO "Enable link time optimization" ${DEFAULT_ENABLE_LTO})
@@ -308,7 +310,7 @@ find_package(Threads REQUIRED)
 
 if (ENABLE_QT)
     if (NOT USE_SYSTEM_QT)
-        download_qt(6.9.2)
+        download_qt(6.9.3)
     endif()
 
     find_package(Qt6 REQUIRED COMPONENTS Widgets Multimedia Concurrent)

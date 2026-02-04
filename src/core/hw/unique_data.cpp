@@ -437,7 +437,7 @@ std::unique_ptr<FileUtil::IOFile> OpenUniqueCryptoFile(const std::string& filena
 		return std::make_unique<FileUtil::CryptoIOFile>(filename, openmode, key, ctr, flags);
 	}
 	
-	return std::make_unique<FileUtil::IOFile>();
+	return std::make_unique<FileUtil::IOFile>(filename, openmode);
 }
 
 bool IsFullConsoleLinked() {

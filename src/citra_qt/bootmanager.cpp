@@ -20,6 +20,7 @@
 #include "core/3ds.h"
 #include "core/core.h"
 #include "core/frontend/framebuffer_layout.h"
+#include "core/loader/loader.h"
 #include "core/perf_stats.h"
 #include "input_common/keyboard.h"
 #include "input_common/main.h"
@@ -66,7 +67,7 @@ void EmuThread::run() {
     MicroProfileOnThreadCreate("EmuThread");
     const auto scope = core_context.Acquire();
 
-    if (Settings::values.preload_textures) {
+    if (Settings::values.custom_textures && Settings::values.preload_textures) {
         emit LoadProgress(VideoCore::LoadCallbackStage::Preload, 0, 0);
         system.CustomTexManager().PreloadTextures(
             stop_run, [this](VideoCore::LoadCallbackStage stage, std::size_t value,
@@ -79,6 +80,10 @@ void EmuThread::run() {
         });
 
     emit LoadProgress(VideoCore::LoadCallbackStage::Prepare, 0, 0);
+
+    u64 program_id{};
+    system.GetAppLoader().ReadProgramId(program_id);
+    system.GPU().ApplyPerProgramSettings(program_id);
 
     system.GPU().Renderer().Rasterizer()->LoadDefaultDiskResources(
         stop_run, [this](VideoCore::LoadCallbackStage stage, std::size_t value, std::size_t total) {
@@ -756,7 +761,7 @@ bool GRenderWindow::InitializeOpenGL() {
     child->SetContext(std::move(child_context));
 
     auto format = child_widget->windowHandle()->format();
-    format.setSwapInterval(Settings::values.use_vsync_new.GetValue());
+    format.setSwapInterval(Settings::values.use_vsync.GetValue());
     child_widget->windowHandle()->setFormat(format);
 
     return true;
