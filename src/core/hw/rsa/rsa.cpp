@@ -122,8 +122,6 @@ std::vector<u8> RsaSlot::GetSignature(std::span<const u8> message) const {
     return HexToBytes(ss.str());
 }
 
-// todotodo
-#ifdef todotodo
 void InitSlots() {
     static bool initialized = false;
     if (initialized)
@@ -225,42 +223,6 @@ void InitSlots() {
         }
     }
 }
-#endif
-
-//--
-void InitSlots() {
-    static bool initialized = false;
-    if (initialized)
-        return;
-    initialized = true;
-
-    const std::string filepath = FileUtil::GetUserPath(FileUtil::UserPath::SysDataDir) + BOOTROM9;
-    FileUtil::IOFile file(filepath, "rb");
-    if (!file) {
-        return;
-    }
-
-    const std::size_t length = file.GetSize();
-    if (length != 65536) {
-        LOG_ERROR(HW_AES, "Bootrom9 size is wrong: {}", length);
-        return;
-    }
-
-    constexpr std::size_t RSA_MODULUS_POS = 0xB3E0;
-    file.Seek(RSA_MODULUS_POS, SEEK_SET);
-    std::vector<u8> modulus(256);
-    file.ReadArray(modulus.data(), modulus.size());
-
-    constexpr std::size_t RSA_EXPONENT_POS = 0xB4E0;
-    file.Seek(RSA_EXPONENT_POS, SEEK_SET);
-    std::vector<u8> exponent(256);
-    file.ReadArray(exponent.data(), exponent.size());
-
-    rsa_slots[0] = RsaSlot(std::move(exponent), std::move(modulus));
-    // TODO(B3N30): Initalize the other slots. But since they aren't used at all, we can skip them
-    // for now
-}
-//--
 
 static RsaSlot empty_slot;
 const RsaSlot& GetSlot(std::size_t slot_id) {

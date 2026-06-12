@@ -1,5 +1,4 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- FILE MODIFIED BY AzaharPlus APRIL 2025 -->
 <ui version="4.0">
  <class>ConfigureDebug</class>
  <widget class="QWidget" name="ConfigureDebug">
@@ -18,7 +17,7 @@
    <item>
     <layout class="QVBoxLayout" name="verticalLayout_2">
      <item>
-      <widget class="QGroupBox" name="groupBox">
+      <widget class="QGroupBox" name="gdb_groupbox">
        <property name="title">
         <string>GDB</string>
        </property>
@@ -60,6 +59,13 @@
            </widget>
           </item>
          </layout>
+        </item>
+        <item>
+          <widget class="QCheckBox" name="debug_next_process">
+            <property name="text">
+              <string>Pause next non-sysmodule process at start</string>
+            </property>
+          </widget>
         </item>
        </layout>
       </widget>
@@ -271,6 +277,16 @@
        </widget>
       </item>
       <item row="2" column="0">
+       <widget class="QCheckBox" name="toggle_unique_data_console_type">
+        <property name="toolTip">
+         <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Toggles the unique data console type (Old 3DS &#8596; New 3DS) to be able to download the opposite system firmware type from system settings.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+        </property>
+        <property name="text">
+         <string>Toggle unique data console type</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="0">
        <widget class="QCheckBox" name="deterministic_async_operations">
         <property name="text">
          <string>Force deterministic async operations</string>
@@ -280,7 +296,7 @@
         </property>
        </widget>
       </item>
-      <item row="3" column="0">
+      <item row="4" column="0">
         <widget class="QCheckBox" name="enable_rpc_server">
           <property name="text">
             <string>Enable RPC server</string>
@@ -289,6 +305,16 @@
             <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Enables the RPC server on port 45987. This allows remotely reading/writing guest memory, do not enable if you don't know what you are doing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
           </property>
         </widget>
+      </item>
+      <item row="5" column="0">
+       <widget class="QCheckBox" name="break_on_unmapped_memory_access">
+        <property name="toolTip">
+         <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Pauses emulation and shows an error message if an unmapped memory access is detected.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+        </property>
+        <property name="text">
+         <string>Break on unmapped memory access</string>
+        </property>
+       </widget>
       </item>
      </layout>
     </widget>

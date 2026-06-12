@@ -14,6 +14,7 @@ import android.os.Build
 import android.text.TextUtils
 import androidx.preference.PreferenceManager
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import kotlinx.serialization.builtins.IntArraySerializer
 import org.citra.citra_emu.CitraApplication
 import org.citra.citra_emu.R
 import org.citra.citra_emu.display.ScreenLayout
@@ -27,12 +28,14 @@ import org.citra.citra_emu.features.settings.model.AbstractStringSetting
 import org.citra.citra_emu.features.settings.model.BooleanSetting
 import org.citra.citra_emu.features.settings.model.FloatSetting
 import org.citra.citra_emu.features.settings.model.IntSetting
+import org.citra.citra_emu.features.settings.model.IntListSetting
 import org.citra.citra_emu.features.settings.model.ScaledFloatSetting
 import org.citra.citra_emu.features.settings.model.Settings
 import org.citra.citra_emu.features.settings.model.StringSetting
 import org.citra.citra_emu.features.settings.model.view.DateTimeSetting
 import org.citra.citra_emu.features.settings.model.view.HeaderSetting
 import org.citra.citra_emu.features.settings.model.view.InputBindingSetting
+import org.citra.citra_emu.features.settings.model.view.MultiChoiceSetting
 import org.citra.citra_emu.features.settings.model.view.RunnableSetting
 import org.citra.citra_emu.features.settings.model.view.SettingsItem
 import org.citra.citra_emu.features.settings.model.view.SingleChoiceSetting
@@ -346,7 +349,7 @@ class SettingsFragmentPresenter(private val fragmentView: SettingsFragmentView) 
                         checkCountryCompatibility()
                     }
                 override val key = IntSetting.EMULATED_REGION.key
-                override val section = null
+                override val section = Settings.SECTION_SYSTEM
                 override val isRuntimeEditable = false
                 override val valueAsString get() = int.toString()
                 override val defaultValue = IntSetting.EMULATED_REGION.defaultValue
@@ -596,6 +599,15 @@ class SettingsFragmentPresenter(private val fragmentView: SettingsFragmentView) 
                     BooleanSetting.COMPRESS_INSTALLED_CIA_CONTENT.defaultValue
                 )
             )
+            add(
+                SwitchSetting(
+                    BooleanSetting.ASYNC_FS_OPERATIONS,
+                    R.string.async_fs_operations,
+                    R.string.async_fs_operations_description,
+                    BooleanSetting.ASYNC_FS_OPERATIONS.key,
+                    BooleanSetting.ASYNC_FS_OPERATIONS.defaultValue
+                )
+            )
         }
     }
 
@@ -776,6 +788,16 @@ class SettingsFragmentPresenter(private val fragmentView: SettingsFragmentView) 
     private fun addControlsSettings(sl: ArrayList<SettingsItem>) {
         settingsActivity.setToolbarTitle(settingsActivity.getString(R.string.preferences_controls))
         sl.apply {
+            add(
+                RunnableSetting(
+                    R.string.controller_auto_map,
+                    R.string.controller_auto_map_description,
+                    true,
+                    R.drawable.ic_controller,
+                    { settingsAdapter.onClickAutoMap() },
+                    onLongClick = { settingsAdapter.onLongClickAutoMap() }
+                )
+            )
             add(HeaderSetting(R.string.generic_buttons))
             Settings.buttonKeys.forEachIndexed { i: Int, key: String ->
                 val button = getInputObject(key)
@@ -811,7 +833,7 @@ class SettingsFragmentPresenter(private val fragmentView: SettingsFragmentView) 
                 add(InputBindingSetting(button, Settings.triggerTitles[i]))
             }
 
-            add(HeaderSetting(R.string.controller_hotkeys))
+            add(HeaderSetting(R.string.controller_hotkeys,R.string.controller_hotkeys_description))
             Settings.hotKeys.forEachIndexed { i: Int, key: String ->
                 val button = getInputObject(key)
                 add(InputBindingSetting(button, Settings.hotkeyTitles[i]))
@@ -897,6 +919,15 @@ class SettingsFragmentPresenter(private val fragmentView: SettingsFragmentView) 
                     R.array.resolutionFactorValues,
                     IntSetting.RESOLUTION_FACTOR.key,
                     IntSetting.RESOLUTION_FACTOR.defaultValue
+                )
+            )
+             add(
+                SwitchSetting(
+                    BooleanSetting.USE_INTEGER_SCALING,
+                    R.string.use_integer_scaling,
+                    R.string.use_integer_scaling_description,
+                    BooleanSetting.USE_INTEGER_SCALING.key,
+                    BooleanSetting.USE_INTEGER_SCALING.defaultValue
                 )
             )
             add(
@@ -1149,6 +1180,17 @@ class SettingsFragmentPresenter(private val fragmentView: SettingsFragmentView) 
                 )
             )
             add(
+                MultiChoiceSetting(
+                    IntListSetting.LAYOUTS_TO_CYCLE,
+                    R.string.layouts_to_cycle,
+                    R.string.layouts_to_cycle_description,
+                    R.array.landscapeLayouts,
+                    R.array.landscapeLayoutValues,
+                    IntListSetting.LAYOUTS_TO_CYCLE.key,
+                    IntListSetting.LAYOUTS_TO_CYCLE.defaultValue
+                )
+            )
+            add(
                 SingleChoiceSetting(
                     IntSetting.PORTRAIT_SCREEN_LAYOUT,
                     R.string.emulation_switch_portrait_layout,
@@ -1242,7 +1284,7 @@ class SettingsFragmentPresenter(private val fragmentView: SettingsFragmentView) 
                 override val section = null
                 override val isRuntimeEditable = false
                 override val valueAsString = int.toString()
-                override val defaultValue = FloatSetting.BACKGROUND_RED.defaultValue
+                override val defaultValue = FloatSetting.BACKGROUND_RED.defaultValue.toInt()
             }
             add(
                 SliderSetting(
@@ -1265,7 +1307,7 @@ class SettingsFragmentPresenter(private val fragmentView: SettingsFragmentView) 
                 override val section = null
                 override val isRuntimeEditable = false
                 override val valueAsString = int.toString()
-                override val defaultValue = FloatSetting.BACKGROUND_GREEN.defaultValue
+                override val defaultValue = FloatSetting.BACKGROUND_GREEN.defaultValue.toInt()
             }
             add(
                 SliderSetting(
@@ -1288,7 +1330,7 @@ class SettingsFragmentPresenter(private val fragmentView: SettingsFragmentView) 
                 override val section = null
                 override val isRuntimeEditable = false
                 override val valueAsString = int.toString()
-                override val defaultValue = FloatSetting.BACKGROUND_BLUE.defaultValue
+                override val defaultValue = FloatSetting.BACKGROUND_BLUE.defaultValue.toInt()
             }
             add(
                 SliderSetting(
@@ -1672,6 +1714,15 @@ class SettingsFragmentPresenter(private val fragmentView: SettingsFragmentView) 
                 )
             )
             add(
+                SwitchSetting(
+                    BooleanSetting.SIMULATE_HEADPHONES_PLUGGED,
+                    R.string.simulate_headphones_plugged,
+                    R.string.simulate_headphones_plugged_description,
+                    BooleanSetting.SIMULATE_HEADPHONES_PLUGGED.key,
+                    BooleanSetting.SIMULATE_HEADPHONES_PLUGGED.defaultValue
+                )
+            )
+            add(
                 SingleChoiceSetting(
                     IntSetting.AUDIO_INPUT_TYPE,
                     R.string.audio_input_type,
@@ -1759,6 +1810,15 @@ class SettingsFragmentPresenter(private val fragmentView: SettingsFragmentView) 
             )
             add(
                 SwitchSetting(
+                    BooleanSetting.SIMULATE_3DS_GPU_TIMINGS,
+                    R.string.simulate_3ds_gpu_timings,
+                    R.string.simulate_3ds_gpu_timings_description,
+                    BooleanSetting.SIMULATE_3DS_GPU_TIMINGS.key,
+                    BooleanSetting.SIMULATE_3DS_GPU_TIMINGS.defaultValue
+                )
+            )
+            add(
+                SwitchSetting(
                     BooleanSetting.DEBUG_RENDERER,
                     R.string.renderer_debug,
                     R.string.renderer_debug_description,
@@ -1782,6 +1842,15 @@ class SettingsFragmentPresenter(private val fragmentView: SettingsFragmentView) 
                     R.string.enable_rpc_server_desc,
                     BooleanSetting.ENABLE_RPC_SERVER.key,
                     BooleanSetting.ENABLE_RPC_SERVER.defaultValue
+                )
+            )
+            add(
+                SwitchSetting(
+                    BooleanSetting.TOGGLE_UNIQUE_DATA_CONSOLE_TYPE,
+                    R.string.toggle_unique_data_console_type,
+                    R.string.toggle_unique_data_console_type_desc,
+                    BooleanSetting.TOGGLE_UNIQUE_DATA_CONSOLE_TYPE.key,
+                    BooleanSetting.TOGGLE_UNIQUE_DATA_CONSOLE_TYPE.defaultValue
                 )
             )
             add(

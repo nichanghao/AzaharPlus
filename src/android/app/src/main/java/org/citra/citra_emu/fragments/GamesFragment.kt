@@ -1,5 +1,3 @@
-//FILE MODIFIED BY AzaharPlus APRIL 2025
-
 // Copyright Citra Emulator Project / Azahar Emulator Project
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
@@ -38,6 +36,7 @@ import org.citra.citra_emu.adapters.GameAdapter
 import org.citra.citra_emu.databinding.FragmentGamesBinding
 import org.citra.citra_emu.features.settings.model.Settings
 import org.citra.citra_emu.model.Game
+import org.citra.citra_emu.utils.BuildUtil
 import org.citra.citra_emu.viewmodel.CompressProgressDialogViewModel
 import org.citra.citra_emu.viewmodel.GamesViewModel
 import org.citra.citra_emu.viewmodel.HomeViewModel
@@ -62,8 +61,14 @@ class GamesFragment : Fragment() {
     companion object {
         fun doCompression(fragment: Fragment, gamesViewModel: GamesViewModel, inputPath: String?, outputUri: Uri?, shouldCompress: Boolean) {
             if (outputUri != null) {
+                val outputPath: String =
+                    if (!BuildUtil.isGooglePlayBuild) {
+                        "!" + NativeLibrary.getNativePath(outputUri)
+                    } else {
+                        outputUri.toString()
+                    }
                 CompressProgressDialogViewModel.reset()
-                val dialog = CompressProgressDialogFragment.newInstance(shouldCompress, outputUri.toString())
+                val dialog = CompressProgressDialogFragment.newInstance(shouldCompress, outputPath)
                 dialog.showNow(
                     fragment.requireActivity().supportFragmentManager,
                     CompressProgressDialogFragment.TAG
@@ -71,9 +76,9 @@ class GamesFragment : Fragment() {
 
                 fragment.lifecycleScope.launch(Dispatchers.IO) {
                     val status = if (shouldCompress) {
-                        NativeLibrary.compressFile(inputPath, outputUri.toString())
+                        NativeLibrary.compressFile(inputPath, outputPath)
                     } else {
-                        NativeLibrary.decompressFile(inputPath, outputUri.toString())
+                        NativeLibrary.decompressFile(inputPath, outputPath)
                     }
 
                     fragment.requireActivity().runOnUiThread {

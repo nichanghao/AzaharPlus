@@ -36,6 +36,7 @@ namespace Loader {
 
 using namespace Common::Literals;
 static constexpr u64 UPDATE_TID_HIGH = 0x0004000e00000000;
+static constexpr u64 DLP_CHILD_TID_HIGH = 0x0004000100000000;
 
 static std::string g_program_id;
 
@@ -50,40 +51,40 @@ void resetProgramId()
 }
 
 FileType AppLoader_NCCH::IdentifyType(FileUtil::IOFile* file) {
-    u32 magic;
-    file->Seek(0x100, SEEK_SET);
-    if (1 != file->ReadArray<u32>(&magic, 1))
-        return FileType::Error;
-
-    if (MakeMagic('N', 'C', 'S', 'D') == magic)
-        return FileType::CCI;
-
-    if (MakeMagic('N', 'C', 'C', 'H') == magic)
-        return FileType::CXI;
+    u32 magic{};
 
     std::unique_ptr<FileUtil::IOFile> file_crypto = HW::UniqueData::OpenUniqueCryptoFile(
         file->Filename(), "rb", HW::UniqueData::UniqueCryptoFileID::NCCH);
 
-    file_crypto->Seek(0x100, SEEK_SET);
-    if (1 != file_crypto->ReadArray<u32>(&magic, 1))
-        return FileType::Error;
-
-    if (MakeMagic('N', 'C', 'S', 'D') == magic)
-        return FileType::CCI;
-
-    if (MakeMagic('N', 'C', 'C', 'H') == magic)
-        return FileType::CXI;
-
+    // Check compressed NCCH file
     std::optional<u32> magic_zstd = FileUtil::Z3DSReadIOFile::GetUnderlyingFileMagic(file);
     if (!magic_zstd.has_value()) {
+        // Handle compressed and crypto NCCH file
         magic_zstd = FileUtil::Z3DSReadIOFile::GetUnderlyingFileMagic(file_crypto.get());
     }
-
     if (magic_zstd.has_value()) {
         if (MakeMagic('N', 'C', 'S', 'D') == magic_zstd)
             return FileType::CCI;
 
         if (MakeMagic('N', 'C', 'C', 'H') == magic_zstd)
+            return FileType::CXI;
+    }
+
+    // Check normal NCCH file
+    if (file->Seek(0x100, SEEK_SET) && 1 == file->ReadArray<u32>(&magic, 1)) {
+        if (MakeMagic('N', 'C', 'S', 'D') == magic)
+            return FileType::CCI;
+
+        if (MakeMagic('N', 'C', 'C', 'H') == magic)
+            return FileType::CXI;
+    }
+
+    // Check crypto NCCH file
+    if (file_crypto->Seek(0x100, SEEK_SET) && 1 == file_crypto->ReadArray<u32>(&magic, 1)) {
+        if (MakeMagic('N', 'C', 'S', 'D') == magic)
+            return FileType::CCI;
+
+        if (MakeMagic('N', 'C', 'C', 'H') == magic)
             return FileType::CXI;
     }
 
@@ -215,6 +216,14 @@ ResultStatus AppLoader_NCCH::LoadExec(std::shared_ptr<Kernel::Process>& process)
             overlay_ncch->exheader_header.arm11_system_local_caps.resource_limit_category);
         process->resource_limit = system.Kernel().ResourceLimit().GetForCategory(category);
 
+        // Update application max cpu setting. PM module uses the launch flags to determine
+        // this, but using the resource limit category is close enough.
+        if (category == Kernel::ResourceLimitCategory::Application) {
+            process->resource_limit->ApplyAppMaxCPUSetting(
+                process, overlay_ncch->exheader_header.arm11_system_local_caps.schedule_mode,
+                overlay_ncch->exheader_header.arm11_system_local_caps.max_cpu);
+        }
+
         // When running N3DS-unaware titles pm will lie about the amount of memory available.
         // This means RESLIMIT_COMMIT = APPMEMALLOC doesn't correspond to the actual size of
         // APPLICATION. See:
@@ -329,12 +338,16 @@ ResultStatus AppLoader_NCCH::Load(std::shared_ptr<Kernel::Process>& process) {
 	g_program_id = program_id;
     LOG_INFO(Loader, "Program ID: {}", program_id);
 
-    u64 update_tid = (ncch_program_id & 0xFFFFFFFFULL) | UPDATE_TID_HIGH;
-    update_ncch.OpenFile(
-        Service::AM::GetTitleContentPath(Service::FS::MediaType::SDMC, update_tid));
-    result = update_ncch.Load();
-    if (result == ResultStatus::Success) {
-        overlay_ncch = &update_ncch;
+    bool is_dlp_child = (ncch_program_id & 0xFFFFFFFF00000000) == DLP_CHILD_TID_HIGH;
+
+    if (!is_dlp_child) {
+        u64 update_tid = (ncch_program_id & 0xFFFFFFFFULL) | UPDATE_TID_HIGH;
+        update_ncch.OpenFile(
+            Service::AM::GetTitleContentPath(Service::FS::MediaType::SDMC, update_tid));
+        result = update_ncch.Load();
+        if (result == ResultStatus::Success) {
+            overlay_ncch = &update_ncch;
+        }
     }
 
     if (auto room_member = Network::GetRoomMember().lock()) {

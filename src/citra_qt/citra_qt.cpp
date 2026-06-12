@@ -59,7 +59,9 @@
 #include "citra_qt/debugger/graphics/graphics_vertex_shader.h"
 #include "citra_qt/debugger/ipc/recorder.h"
 #include "citra_qt/debugger/lle_service_modules.h"
+#if MICROPROFILE_ENABLED
 #include "citra_qt/debugger/profiler.h"
+#endif
 #include "citra_qt/debugger/registers.h"
 #include "citra_qt/debugger/wait_tree.h"
 #ifdef USE_DISCORD_PRESENCE
@@ -107,6 +109,7 @@
 #include "core/hle/service/fs/archive.h"
 #include "core/hle/service/nfc/nfc.h"
 #include "core/loader/loader.h"
+#include "core/loader/ncch.h"
 #include "core/movie.h"
 #include "core/savestate.h"
 #include "core/system_titles.h"
@@ -118,6 +121,7 @@
 
 #ifdef __APPLE__
 #include "common/apple_authorization.h"
+#include "common/apple_utils.h"
 Q_IMPORT_PLUGIN(QDarwinCameraPermissionPlugin);
 #endif
 
@@ -134,6 +138,7 @@ Q_IMPORT_PLUGIN(QWindowsIntegrationPlugin);
 #endif
 
 #include "core/hw/unique_data.h"
+#include "core/zip_pass.h"
 
 constexpr int default_mouse_timeout = 2500;
 
@@ -144,6 +149,61 @@ constexpr int default_mouse_timeout = 2500;
  */
 
 const int GMainWindow::max_recent_files_item;
+
+// There is a bug in the QT implementation on MSYS2 builds
+// that cause corners to appear when the app is switched to
+// fullscreen. The following code aims to fix that issue
+// until it is addressed upstream. It works by manually
+// disabling corners through the DWM API.
+// TODO(PabloMK7): Remove once the upstream bug is solved.
+#if defined(_WIN32) && !defined(_MSC_VER)
+#define NEEDS_ROUND_CORNERS_FIX
+#endif
+
+#ifdef NEEDS_ROUND_CORNERS_FIX
+#include <dwmapi.h>
+class WindowCornerManager {
+public:
+    static WindowCornerManager& instance() {
+        static WindowCornerManager inst;
+        return inst;
+    }
+
+    void blockRoundedCorners(QWidget* widget, bool block) {
+        HWND hwnd = reinterpret_cast<HWND>(widget->winId());
+        DWORD pref;
+
+        if (block) {
+            pref = DWMWCP_DEFAULT;
+            if (SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &pref,
+                                                sizeof(pref)))) {
+                original_prefs[hwnd] = pref;
+            } else {
+                original_prefs[hwnd] = DWMWCP_DEFAULT;
+            }
+
+            pref = DWMWCP_DONOTROUND;
+            DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &pref, sizeof(pref));
+        } else {
+            auto it = original_prefs.find(hwnd);
+            if (it == original_prefs.end())
+                return;
+
+            pref = it->second;
+
+            DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &pref, sizeof(pref));
+
+            original_prefs.erase(it);
+        }
+    }
+
+private:
+    WindowCornerManager() = default;
+    ~WindowCornerManager() = default;
+
+    std::unordered_map<HWND, DWORD> original_prefs;
+};
+#endif
 
 static QString PrettyProductName() {
 #ifdef _WIN32
@@ -184,13 +244,1114 @@ bool IsPrereleaseBuild() {
 }
 
 #ifdef ENABLE_QT_UPDATE_CHECKER
-bool ShouldCheckForPrereleaseUpdates() {
+static bool ShouldCheckForPrereleaseUpdates() {
     const bool update_channel = UISettings::values.update_check_channel.GetValue();
     const bool using_prerelease_channel =
         (update_channel == UISettings::UpdateCheckChannels::PRERELEASE);
     return (IsPrereleaseBuild() || using_prerelease_channel);
 }
+
+static int GetMajorVersion(const std::string& version) {
+    size_t dot = version.find('.');
+    try {
+        return std::stoi(version.substr(0, dot));
+    } catch (...) {
+        return 0;
+    }
+}
 #endif
+
+// from the db in https://github.com/8bitDream/AmiiboAPI
+
+static std::map<std::string, std::string> amiibos = {
+	{"@0438000103000502", "Sandy"},
+	{"@0181010100b40502", "Isabelle - Winter"},
+	{"@3200000000300002", "Sonic"},
+	{"@029e0001013d0502", "Ava"},
+	{"@01b3000100b50502", "Blanca"},
+	{"@02f8000101380502", "Mac"},
+	{"@023c000100bd0502", "Lucha"},
+	{"@0263000100750502", "Punchy"},
+	{"@03700001015d0502", "Violet"},
+	{"@07c0000000210002", "Mii Brawler"},
+	{"@09c5020102830e02", "Wario - Baseball"},
+	{"@026c000100c30502", "Tom"},
+	{"@0101030004140902", "Zelda and Loftwing"},
+	{"@04e6000100820502", "Mint"},
+	{"@04e3000101650502", "Caroline"},
+	{"@0188000101120502", "Mabel"},
+	{"@0800010004150402", "Inkling - Yellow"},
+	{"@0807000004330402", "Shiver"},
+	{"@0808000004340402", "Frye"},
+	{"@0809000004350402", "Big Man"},
+	{"@0a1d000103d40502", "Frett"},
+	{"@035d000100c90502", "Kidd"},
+	{"@1f400000035e1002", "Qbby"},
+	{"@09c6010102870e02", "Waluigi - Soccer"},
+	{"@0264000101ac0502", "Purrl"},
+	{"@025e000101250502", "Mitzi"},
+	{"@0a10000103c70502", "Reneigh"},
+	{"@047a000100600502", "Rasher"},
+	{"@04a10001016f0502", "Chrissy"},
+	{"@09d0030102bb0e02", "Metal Mario - Tennis"},
+	{"@01910001004e0502", "Harriet"},
+	{"@02f1000101450502", "Daisy"},
+	{"@02d7000101300502", "Bam"},
+	{"@02030001019a0502", "Anabelle"},
+	{"@0189000100ab0502", "Labelle"},
+	{"@3841000104251902", "Tatsuhisa “Luke” Kamijō"},
+	{"@08060100041c0402", "Smallfry"},
+	{"@0800010003820002", "Inkling"},
+	{"@018d0001010c0502", "Rover"},
+	{"@01a7000101140502", "Wendell"},
+	{"@04ba0001005d0502", "Renée"},
+	{"@0489000100ef0502", "Agnes"},
+	{"@018e010101780502", "Resetti - Without Hat"},
+	{"@0a04000103b50502", "Daisy Mae"},
+	{"@026d0001013f0502", "Merry"},
+	{"@03250001010a0502", "Big Top"},
+	{"@01b4000101130502", "Leif"},
+	{"@0390000101850502", "Rocco"},
+	{"@09c7050102900e02", "Donkey Kong - Horse Racing"},
+	{"@0437000101050502", "Gladys"},
+	{"@0230000101d20502", "Twiggy"},
+	{"@033b000100fa0502", "Camofrog"},
+	{"@01c1000002440502", "Lottie"},
+	{"@00c00000037b0002", "King K. Rool"},
+	{"@3845000104291902", "Nail Saionji"},
+	{"@3601000004210002", "Sephiroth"},
+	{"@02da000101330502", "Deirdre"},
+	{"@0a03000103b40502", "Flick"},
+	{"@2102000000290002", "Lucina"},
+	{"@02b80001019c0502", "Naomi"},
+	{"@0347000103020502", "Raddle"},
+	{"@01b0000100520502", "Tortimer"},
+	{"@018c000002430502", "Digby"},
+	{"@033e000101a20502", "Puddles"},
+	{"@08050200038f0402", "Octoling Boy"},
+	{"@0140000003550902", "Guardian"},
+	{"@1907000003840002", "Squirtle"},
+	{"@00020003039dff02", "Peach - Power Up Band"},
+	{"@0238000102f80502", "Jacob"},
+	{"@0017000002680102", "Boo"},
+	{"@035e0001018e0502", "Pashmina"},
+	{"@0328000102eb0502", "Paolo"},
+	{"@028a000102e90502", "June"},
+	{"@3740000103741402", "Super Mario Cereal"},
+	{"@0100000000040002", "Link"},
+	{"@3600000002590002", "Cloud"},
+	{"@02710001019b0502", "Rudy"},
+	{"@0384000100860502", "Flurry"},
+	{"@028e0001019e0502", "Tammy"},
+	{"@0214000100e40502", "Teddy"},
+	{"@04510001015e0502", "Frank"},
+	{"@09c2050102770e02", "Peach - Horse Racing"},
+	{"@024d000102f60502", "Stu"},
+	{"@03a8000100910502", "Roscoe"},
+	{"@2101000000180002", "Ike"},
+	{"@09c1040102710e02", "Luigi - Golf"},
+	{"@0381000100d50502", "Rodney"},
+	{"@09cc010102a50e02", "Baby Mario - Soccer"},
+	{"@3805000103981702", "Daijobu"},
+	{"@02d9000101c80502", "Bruce"},
+	{"@040f000101500502", "Bree"},
+	{"@04fd0001007b0502", "Bangle"},
+	{"@0282000101810502", "Stitches"},
+	{"@045f000101a80502", "Aurora"},
+	{"@046a000101d00502", "Iggly"},
+	{"@0252000100fe0502", "Vic"},
+	{"@35050000040c0f02", "Razewing Ratha"},
+	{"@35060000040d0f02", "Ena"},
+	{"@3509000004101802", "Palico"},
+	{"@35090100042b1802", "Palico"},
+	{"@350b0000042d1802", "Malzeno"},
+	{"@350c000004fa0f02", "Ratha"},
+	{"@350d000004fb0f02", "Ratha V"},
+	{"@350e000004fc0f02", "Rudy"},
+	{"@3580000005062102", "Diana"},
+	{"@000000030430ff02", "Golden - Power Up Band"},
+	{"@044c0001008e0502", "Amelia"},
+	{"@0313000101210502", "Miranda"},
+	{"@01a5000101720502", "Katrina"},
+	{"@0a0c000103c30502", "Audie"},
+	{"@09c8050102950e02", "Diddy Kong - Horse Racing"},
+	{"@0307000100640502", "Bill"},
+	{"@022f0001011e0502", "Anchovy"},
+	{"@0a05000103b80502", "Harvey"},
+	{"@0100000003530902", "Link - Archer"},
+	{"@0186010100af0502", "Tommy - Uniform"},
+	{"@08050100038e0402", "Octoling Girl"},
+	{"@01000000034f0902", "8-Bit Link"},
+	{"@0482000102fd0502", "Maggie"},
+	{"@3480000003791502", "Mega Man"},
+	{"@0a00000103ab0502", "Orville"},
+	{"@032e0101031c0502", "Chai"},
+	{"@0a0b000103c20502", "Dom"},
+	{"@01960000024e0502", "Kapp'n"},
+	{"@040d000100780502", "Limberg"},
+	{"@0312000103090502", "Weber"},
+	{"@04940001009a0502", "Bunnie"},
+	{"@00800102035d0302", "Poochy"},
+	{"@09c6030102890e02", "Waluigi - Tennis"},
+	{"@01a00001010f0502", "Pelly"},
+	{"@033a000101cc0502", "Frobert"},
+	{"@09ce050102b30e02", "Birdo - Horse Racing"},
+	{"@04ea000103180502", "Tasha"},
+	{"@022e000101d30502", "Robin"},
+	{"@02c3000100dc0502", "Alfonso"},
+	{"@023e000100d10502", "Peck"},
+	{"@09cd020102ab0e02", "Baby Luigi - Baseball"},
+	{"@0004000002620102", "Rosalina"},
+	{"@0004010004ea0102", "Rosalina and Lumas"},
+	{"@018b000002460502", "Cyrus"},
+	{"@04d0000101960502", "Frita"},
+	{"@046d000100f30502", "Sprinkle"},
+	{"@040e000100880502", "Bella"},
+	{"@02cb000101360502", "Drago"},
+	{"@0199000101160502", "Grams"},
+	{"@21050000025a0002", "Corrin"},
+	{"@04a3000101c90502", "OHare"},
+	{"@0741000000200002", "Dark Pit"},
+	{"@0004010000130002", "Rosalina && Luma"},
+	{"@01a80001004f0502", "Redd"},
+	{"@0188000002410502", "Mabel"},
+	{"@0385000101060502", "Hamphrey"},
+	{"@01ab0001017c0502", "Pave"},
+	{"@09c5010102820e02", "Wario - Soccer"},
+	{"@02c4000100670502", "Alli"},
+	{"@09c4040102800e02", "Yoshi - Golf"},
+	{"@02ee000101990502", "Bones"},
+	{"@05c4000004131302", "E.M.M.I."},
+	{"@0100000003540902", "Link - Rider"},
+	{"@04980001014a0502", "Gaston"},
+	{"@03180001006c0502", "Quillson"},
+	{"@09d1010102be0e02", "Pink Gold Peach - Soccer"},
+	{"@0700000000070002", "Wii Fit Trainer"},
+	{"@00070000001a0002", "Wario"},
+	{"@22c00000003a0202", "Chibi Robo"},
+	{"@00090000000d0002", "Diddy Kong"},
+	{"@01ac0001017f0502", "Zipper"},
+	{"@044d000101930502", "Pierce"},
+	{"@3801000103941702", "Ikari"},
+	{"@0100010003500902", "Toon Link - The Wind Waker"},
+	{"@3640000003a20002", "Hero"},
+	{"@0196000100480502", "Kapp'n"},
+	{"@00010003039cff02", "Luigi - Power Up Band"},
+	{"@08000100003e0402", "Inkling Girl"},
+	{"@050c000101c10502", "Lobo"},
+	{"@0101000003560902", "Zelda"},
+	{"@3502010002e40f02", "Rathian and Cheval"},
+	{"@09c60501028b0e02", "Waluigi - Horse Racing"},
+	{"@0a18000103cf0502", "Quinn"},
+	{"@018c0001004c0502", "Digby"},
+	{"@01000000037c0002", "Young Link"},
+	{"@0343000102ef0502", "Huck"},
+	{"@0450000100cf0502", "Avery"},
+	{"@03d3000102f30502", "Carrie"},
+	{"@0261000100650502", "Kiki"},
+	{"@01810000024b0502", "Isabelle - Summer Outfit"},
+	{"@03da000101510502", "Rooney"},
+	{"@02190001007e0502", "Nate"},
+	{"@09d0010102b90e02", "Metal Mario - Soccer"},
+	{"@049a0001014e0502", "Pippy"},
+	{"@0003000000020002", "Yoshi"},
+	{"@09ce030102b10e02", "Birdo - Tennis"},
+	{"@22420000041f0002", "Mythra"},
+	{"@03720001010b0502", "Rocket"},
+	{"@03ac000101880502", "Peaches"},
+	{"@02a6000101240502", "Ken"},
+	{"@08000200003f0402", "Inkling Boy"},
+	{"@0001000000350102", "Luigi"},
+	{"@019a000100b70502", "Chip"},
+	{"@04ff000101620502", "Claudia"},
+	{"@041c000101410502", "Greta"},
+	{"@2107000003611202", "Celica"},
+	{"@030b000100790502", "Deena"},
+	{"@1902000003830002", "Ivysaur"},
+	{"@04df000100e80502", "Filbert"},
+	{"@035c000101290502", "Velma"},
+	{"@02210001013c0502", "Beardo"},
+	{"@0a1e000103d50502", "Azalea"},
+	{"@05c0000000060002", "Samus"},
+	{"@05c00000043b1302", "Samus"},
+	{"@05c00000043a1302", "Samus && Vi-O-La"},
+	{"@05c50000043c1302", "Sylux"},
+	{"@37c00000038b0002", "Simon"},
+	{"@35080000040f1802", "Magnamalo"},
+	{"@09cf030102b60e02", "Rosalina - Tennis"},
+	{"@09cb040102a30e02", "Boo - Golf"},
+	{"@03ff000100f40502", "Flip"},
+	{"@04ef0001013b0502", "Hazel"},
+	{"@0392000101270502", "Bubbles"},
+	{"@03a7000101a10502", "Elmer"},
+	{"@02c5000103080502", "Boots"},
+	{"@0005ff00023a0702", "Hammer Slam Bowser"},
+	{"@02f4000103050502", "Bea"},
+	{"@036b0001018b0502", "Boone"},
+	{"@0a08000103bd0502", "Wardell"},
+	{"@0a16000103cd0502", "Petri"},
+	{"@0a1b000103d20502", "Ace"},
+	{"@07c0010000220002", "Mii Swordfighter"},
+	{"@3842000104261902", "Gakuto Sōgetsu"},
+	{"@3c80000003a40002", "Terry Bogard"},
+	{"@09c30501027c0e02", "Daisy - Horse Racing"},
+	{"@37800000038a0002", "Snake"},
+	{"@01ae0001011b0502", "Franklin"},
+	{"@1d01000003750d02", "Detective Pikachu"},
+	{"@0462000100f60502", "Hopper"},
+	{"@350a0100042c1802", "Palamute"},
+	{"@03af0001012c0502", "Colton"},
+	{"@0440000100ca0502", "Phoebe"},
+	{"@021c000102f70502", "Ursala"},
+	{"@02ca000101ca0502", "Gayle"},
+	{"@00130000037a0002", "Daisy"},
+	{"@047c000101a00502", "Lucy"},
+	{"@04eb000102f00502", "Sylvana"},
+	{"@0358000102fa0502", "Billy"},
+	{"@021b000100800502", "Tutu"},
+	{"@0a07000103bc0502", "Niko"},
+	{"@021d000101cd0502", "Grizzly"},
+	{"@0181000100440502", "Isabelle"},
+	{"@04a2000102e80502", "Hopkins"},
+	{"@0311000100d60502", "Scoot"},
+	{"@03bf000101bc0502", "Sydney"},
+	{"@04140001030a0502", "Candi"},
+	{"@04d30101031b0502", "Étoile"},
+	{"@03290001009d0502", "Axel"},
+	{"@04fb000101c60502", "Rowan"},
+	{"@025f000101d70502", "Rosie - Amiibo Festival"},
+	{"@01940000024a0502", "Kicks"},
+	{"@3500020002e20f02", "One-Eyed Rathalos and Rider - Female"},
+	{"@019d000100ac0502", "Copper"},
+	{"@0233000103060502", "Admiral"},
+	{"@043c000101cb0502", "Cranston"},
+	{"@05840000037e0002", "Wolf"},
+	{"@037f000101aa0502", "Apple"},
+	{"@018e000002490502", "Resetti"},
+	{"@09c3010102780e02", "Daisy - Soccer"},
+	{"@1919000000090002", "Pikachu"},
+	{"@03fd000101580502", "Monty"},
+	{"@0206000103120502", "Snooty"},
+	{"@00030102023e0302", "Mega Yarn Yoshi"},
+	{"@02a3000102ff0502", "Plucky"},
+	{"@049c000101400502", "Genji"},
+	{"@01850001004b0502", "Timmy"},
+	{"@0314000102f40502", "Ketchup"},
+	{"@01030000024f0902", "Midna && Wolf Link"},
+	{"@00010000000c0002", "Luigi"},
+	{"@0001000404401c02", "Luigi - My Mario Wooden Blocks"},
+	{"@0189010103b10502", "Label"},
+	{"@3dc0000004220002", "Steve"},
+	{"@01840000024d0502", "Timmy && Tommy"},
+	{"@21000000000b0002", "Marth"},
+	{"@0195000100b00502", "Porter"},
+	{"@0003000000370102", "Yoshi"},
+	{"@0003000404421c02", "Yoshi - My Mario Wooden Blocks"},
+	{"@030f0001016d0502", "Derwin"},
+	{"@07810000002e0002", "R.O.B. - Famicom"},
+	{"@3600010003620002", "Cloud - Player 2"},
+	{"@02090001019f0502", "Olaf"},
+	{"@04b3000100dd0502", "Rhonda"},
+	{"@09c60401028a0e02", "Waluigi - Golf"},
+	{"@21080000036f1202", "Chrom"},
+	{"@09ce040102b20e02", "Birdo - Golf"},
+	{"@09c5040102850e02", "Wario - Golf"},
+	{"@0369000100d30502", "Cesar"},
+	{"@3380000003781402", "Solaire of Astora"},
+	{"@3844000104281902", "Roa Kirishima"},
+	{"@0215000101820502", "Pinky"},
+	{"@0286000103130502", "Olive"},
+	{"@078f000003810002", "Ice Climbers"},
+	{"@38460001042a1902", "Asana Mutsuba"},
+	{"@01830101010e0502", "Tom Nook - Jacket"},
+	{"@0416000100fb0502", "Anicotti"},
+	{"@09c0010102690e02", "Mario - Soccer"},
+	{"@03490001018d0502", "Croque"},
+	{"@0105000003580902", "Daruk"},
+	{"@010b000004a50902", "Tulin"},
+	{"@010c000004a60902", "Yunobo"},
+	{"@010a000004a40902", "Sidon"},
+	{"@0109000004a30902", "Riju"},
+	{"@0486000100fc0502", "Chops"},
+	{"@35c0000003920a02", "Shovel Knight - Gold Edition"},
+	{"@0005000003730102", "Bowser - Wedding"},
+	{"@0182010100460502", "DJ KK"},
+	{"@01a6000103b70502", "Saharah"},
+	{"@02310001006a0502", "Jitters"},
+	{"@01070000035a0902", "Mipha"},
+	{"@35070000040e0f02", "Tsukino"},
+	{"@0251000100c10502", "Coach"},
+	{"@02df000101910502", "Erik"},
+	{"@03fc000101470502", "Tammi"},
+	{"@03480001006b0502", "Gigi"},
+	{"@02ed0001015a0502", "Biskit"},
+	{"@34c1000003890002", "Ken"},
+	{"@0187000100470502", "Sable"},
+	{"@0190000101710502", "Brewster"},
+	{"@03c50001015c0502", "Lyman"},
+	{"@0200000100a10502", "Cyrano"},
+	{"@0418000100d80502", "Broccolo"},
+	{"@03a9000100710502", "Winnie"},
+	{"@0235000100840502", "Midge"},
+	{"@04e8000101ce0502", "Cally"},
+	{"@3504010002e60f02", "Qurupeco and Dan"},
+	{"@0283000100c70502", "Vladimir"},
+	{"@03ea0001030b0502", "Leopold"},
+	{"@030a000101c70502", "Maelle"},
+	{"@08010000025d0402", "Callie"},
+	{"@0801000004360402", "Callie - Alterna"},
+	{"@04a80101031e0502", "Toby"},
+	{"@0496000100d90502", "Coco"},
+	{"@0439000103110502", "Sprocket"},
+	{"@01ad000100b80502", "Jack"},
+	{"@3800000103931702", "Pawapuro"},
+	{"@3b40000003a30002", "Banjo && Kazooie"},
+	{"@03d7000101b40502", "Sylvia"},
+	{"@050e000100d70502", "Whitney"},
+	{"@01a80101017e0502", "Redd - Shirt"},
+	{"@0a400000041d0002", "Min Min"},
+	{"@09c2010102730e02", "Peach - Soccer"},
+	{"@0a09000103c00502", "Sherb"},
+	{"@026a000101460502", "Stinky"},
+	{"@04a00001016e0502", "Francine"},
+	{"@0460000100a50502", "Roald"},
+	{"@09cb050102a40e02", "Boo - Horse Racing"},
+	{"@02680001007d0502", "Monique"},
+	{"@04fc000102ee0502", "Tybalt"},
+	{"@03be000101980502", "Melba"},
+	{"@09c10101026e0e02", "Luigi - Soccer"},
+	{"@2108000003880002", "Chrom"},
+	{"@1f01000000270002", "Meta Knight"},
+	{"@1f01000004c61e03", "Meta Knight (&& Shadow Star)"},
+	{"@04e1000101be0502", "Nibbles"},
+	{"@08020000025e0402", "Marie"},
+	{"@0802000004370402", "Marie - Alterna"},
+	{"@028f0101031a0502", "Marty"},
+	{"@047d0001012e0502", "Spork - Crackle"},
+	{"@09cb010102a00e02", "Boo - Soccer"},
+	{"@35c30000036e0a02", "King Knight"},
+	{"@0800030000400402", "Inkling Squid"},
+	{"@034b0001009f0502", "Henry"},
+	{"@0192000002470502", "Blathers"},
+	{"@01080000035b0902", "Revali"},
+	{"@04cf000100e10502", "Timbra"},
+	{"@03aa000100e60502", "Ed"},
+	{"@0187000103b00502", "Sable"},
+	{"@0453000101040502", "Keaton"},
+	{"@047b000100f50502", "Hugh"},
+	{"@033d0001013a0502", "Wart Jr."},
+	{"@0194000100aa0502", "Kicks"},
+	{"@01b1000100b20502", "Shrunk"},
+	{"@03c6000100930502", "Eugene"},
+	{"@04e0000100f70502", "Pecan"},
+	{"@1ac0000000110002", "Lucario"},
+	{"@023f000101660502", "Sparro"},
+	{"@0101000003520902", "Toon Zelda - The Wind Waker"},
+	{"@0181030101700502", "Isabelle - Dress"},
+	{"@0266000100680502", "Kabuki"},
+	{"@0326000101390502", "Eloise"},
+	{"@04850001014c0502", "Gala"},
+	{"@046b000101970502", "Tex"},
+	{"@018a000002450502", "Reese"},
+	{"@0500000100e70502", "Bianca"},
+	{"@0000000000340102", "Mario"},
+	{"@00000004043f1c02", "Mario - My Mario Wooden Blocks"},
+	{"@07c0020000230002", "Mii Gunner"},
+	{"@0002000003720102", "Peach - Wedding"},
+	{"@0a17000103ce0502", "Cephalobot"},
+	{"@0464000100c00502", "Gwen"},
+	{"@09c70101028c0e02", "Donkey Kong - Soccer"},
+	{"@0487000101bf0502", "Kevin"},
+	{"@04de000100ce0502", "Blaire"},
+	{"@050d000101420502", "Wolfgang"},
+	{"@09c40301027f0e02", "Yoshi - Tennis"},
+	{"@018e000100490502", "Resetti"},
+	{"@0483000101b00502", "Peggy"},
+	{"@01000000034d0902", "Link - Twilight Princess"},
+	{"@036e000102fb0502", "Boyd"},
+	{"@3500010002e10f02", "One-Eyed Rathalos and Rider - Male"},
+	{"@0499000100df0502", "Gabi"},
+	{"@024f000100810502", "T-Bone"},
+	{"@09c5030102840e02", "Wario - Tennis"},
+	{"@0580000000050002", "Fox"},
+	{"@0800030002610402", "Inkling Squid - Orange"},
+	{"@01020100041a0902", "Ganondorf - Tears of the Kingdom"},
+	{"@0481000102f10502", "Boris"},
+	{"@02010001016a0502", "Antonio"},
+	{"@0284000102fe0502", "Murphy"},
+	{"@0468000102f20502", "Wade"},
+	{"@0282000101d60502", "Stitches - Amiibo Festival"},
+	{"@01a40001004d0502", "Pascal"},
+	{"@0a06000103ba0502", "Wisp"},
+	{"@02dc000100be0502", "Fuchsia"},
+	{"@1927000000260002", "Jigglypuff"},
+	{"@032c000101480502", "Tucker"},
+	{"@01000000034b0902", "Link - Ocarina of Time"},
+	{"@09cb020102a10e02", "Boo - Baseball"},
+	{"@09c2040102760e02", "Peach - Golf"},
+	{"@03e70001012a0502", "Elvis"},
+	{"@19ac000003850002", "Pichu"},
+	{"@0803000003760402", "Pearl"},
+	{"@0803000004380402", "Pearl - Side Order"},
+	{"@0a14000103cb0502", "Shino"},
+	{"@01000000034c0902", "Link - Majora's Mask"},
+	{"@01c10101017a0502", "Lottie - Black Skirt And Bow"},
+	{"@0513000102e70502", "Vivian"},
+	{"@041b000100f10502", "Bettina"},
+	{"@3dc1000004230002", "Alex"},
+	{"@01aa000100530502", "Lyle"},
+	{"@02f0000100a70502", "Walker"},
+	{"@03c1000100bb0502", "Ozzie"},
+	{"@0008ff00023b0702", "Turbo Charge Donkey Kong"},
+	{"@0452000100730502", "Sterling"},
+	{"@0181000101d40502", "Isabelle - Character Parfait"},
+	{"@049f000103010502", "Claude"},
+	{"@02ea000101d50502", "Goldie - Amiibo Festival"},
+	{"@02d6000100560502", "Fauna"},
+	{"@0270000100ff0502", "Ankha"},
+	{"@01a2000103b90502", "Gulliver"},
+	{"@0267000101080502", "Kid Cat"},
+	{"@3843000104271902", "Romin Kirishima"},
+	{"@0272000101860502", "Katt"},
+	{"@00240000038d0002", "Piranha Plant"},
+	{"@03e8000102f50502", "Rex"},
+	{"@02dd000100ea0502", "Beau"},
+	{"@01410000035c0902", "Bokoblin"},
+	{"@09cf020102b50e02", "Rosalina - Baseball"},
+	{"@19960000023d0002", "Mewtwo"},
+	{"@0393000100a00502", "Bertha"},
+	{"@1d000001025c0d02", "Shadow Mewtwo"},
+	{"@04650001006e0502", "Puck"},
+	{"@0106000003590902", "Urbosa"},
+	{"@025f000101c50502", "Rosie"},
+	{"@210b000003a50002", "Byleth"},
+	{"@04b40001030c0502", "Spike"},
+	{"@0100000003990902", "Link - Link's Awakening"},
+	{"@041a000100e00502", "Moose"},
+	{"@0000000002390602", "8-Bit Mario Modern Color"},
+	{"@04800001008d0502", "Cobb"},
+	{"@09c8010102910e02", "Diddy Kong - Soccer"},
+	{"@02ef000100580502", "Portia"},
+	{"@029a000100ee0502", "Benedict"},
+	{"@0280000100830502", "Pudge"},
+	{"@022d000100f20502", "Jay"},
+	{"@35c0000002500a02", "Shovel Knight"},
+	{"@38c0000003911602", "Loot Goblin"},
+	{"@02690001011f0502", "Tabby"},
+	{"@0281000101200502", "Kody"},
+	{"@09ca0501029f0e02", "Bowser Jr. - Horse Racing"},
+	{"@044b0001016c0502", "Apollo"},
+	{"@0184050103a90502", "Timmy && Tommy"},
+	{"@027e000101690502", "Maple"},
+	{"@0000010000190002", "Dr. Mario"},
+	{"@09cc050102a90e02", "Baby Mario - Horse Racing"},
+	{"@09cd030102ac0e02", "Baby Luigi - Tennis"},
+	{"@0208000100960502", "Annalisa"},
+	{"@032d000100bc0502", "Tia"},
+	{"@03bc0001008a0502", "Yuka"},
+	{"@0183000002420502", "Tom Nook"},
+	{"@0309000100c60502", "Pate"},
+	{"@1f000000000a0002", "Kirby"},
+	{"@04a4000100d40502", "Carmen"},
+	{"@019c000101730502", "Phineas"},
+	{"@03380001011d0502", "Lily"},
+	{"@025d000100550502", "Bob"},
+	{"@3501000002e30f02", "Nabiru"},
+	{"@018b000101150502", "Cyrus"},
+	{"@350a000004111802", "Palamute"},
+	{"@0181040103aa0502", "Isabelle"},
+	{"@33c0000004200002", "Kazuya"},
+	{"@05810000001c0002", "Falco"},
+	{"@03a6000100c80502", "Savannah"},
+	{"@2281000002510002", "Lucas"},
+	{"@043d0001007c0502", "Phil"},
+	{"@019f000101110502", "Pete"},
+	{"@0380000101870502", "Graham"},
+	{"@3503010002e50f02", "Barioth and Ayuria"},
+	{"@030e0001012f0502", "Freckles"},
+	{"@0a1f000103d60502", "Roswell"},
+	{"@0005000000140002", "Bowser"},
+	{"@02fa000100970502", "Benjamin"},
+	{"@05c0000004121302", "Samus - Metroid Dread"},
+	{"@02db0001005e0502", "Lopez"},
+	{"@04cc000100a40502", "Willow"},
+	{"@03450001005f0502", "Jambette"},
+	{"@1906000000240002", "Charizard"},
+	{"@04a7000101a60502", "Mira"},
+	{"@0000030003a60102", "Mario - Cat"},
+	{"@01b10101017b0502", "Shrunk - Loud Jacket"},
+	{"@0a0f000103c60502", "Raymond"},
+	{"@0a12000103c90502", "Ione"},
+	{"@0317000100a60502", "Molly"},
+	{"@01a9000101760502", "Gracie"},
+	{"@2109000003701202", "Tiki"},
+	{"@0373000101340502", "Hans"},
+	{"@019b000100b60502", "Nat"},
+	{"@0186030101750502", "Tommy - Suit"},
+	{"@3480000002580002", "Mega Man - Gold Edition"},
+	{"@0185020101170502", "Timmy - Full Apron"},
+	{"@0101000004190902", "Zelda - Tears of the Kingdom"},
+	{"@026e000100ba0502", "Felicity"},
+	{"@01a20001017d0502", "Gulliver"},
+	{"@09c6020102880e02", "Waluigi - Baseball"},
+	{"@01920001010d0502", "Blathers"},
+	{"@1f00000002540c02", "Kirby"},
+	{"@024b000101260502", "Rodeo"},
+	{"@09cc040102a80e02", "Baby Mario - Golf"},
+	{"@03d1000100c20502", "Kitt"},
+	{"@0344000100c50502", "Prince"},
+	{"@0182000101d80502", "K. K. Slider - Pikopuri"},
+	{"@06400100001e0002", "Olimar"},
+	{"@03ae000100870502", "Clyde"},
+	{"@049d000100ed0502", "Ruby"},
+	{"@021a000100da0502", "Groucho"},
+	{"@1f02000000280002", "King Dedede"},
+	{"@2104000002520002", "Roy"},
+	{"@0000000003710102", "Mario - Wedding"},
+	{"@0003010200430302", "Light Blue Yarn Yoshi"},
+	{"@04c6000101670502", "Baabara"},
+	{"@07800000002d0002", "Mr. Game && Watch"},
+	{"@0600000000120002", "Captain Falcon"},
+	{"@04e5000101ad0502", "Static"},
+	{"@0411000101ab0502", "Rod"},
+	{"@0395000102fc0502", "Bitty"},
+	{"@0002010003a70102", "Peach - Cat"},
+	{"@044e000103150502", "Buzz"},
+	{"@0192000103ad0502", "Blathers"},
+	{"@04a5000100740502", "Bonbon"},
+	{"@04fa000101680502", "Rolf"},
+	{"@0436000101940502", "Queenie"},
+	{"@02de0001009c0502", "Diana"},
+	{"@3803000103961702", "Hayakawa"},
+	{"@03bd000100f90502", "Alice"},
+	{"@0007000002630102", "Wario"},
+	{"@021e000101230502", "Paula"},
+	{"@09d0040102bc0e02", "Metal Mario - Golf"},
+	{"@0232000102ea0502", "Piper"},
+	{"@1f01000002550c02", "Meta Knight"},
+	{"@0339000101b10502", "Ribbot"},
+	{"@04b6000102ec0502", "Hornsby"},
+	{"@0185040101790502", "Timmy - Suit"},
+	{"@0a01000103ac0502", "Wilbur"},
+	{"@032a000103070502", "Ellie"},
+	{"@027d000100630502", "Bluebear"},
+	{"@0006000000150002", "Bowser Jr."},
+	{"@22400000002b0002", "Shulk"},
+	{"@0013000002660102", "Daisy"},
+	{"@09c9010102960e02", "Bowser - Soccer"},
+	{"@04e4000101b60502", "Sally"},
+	{"@0a11000103c80502", "Sasha"},
+	{"@21030000002a0002", "Robin"},
+	{"@02b1000100690502", "Patty"},
+	{"@0316000101c00502", "Gloria"},
+	{"@0182000100a80502", "K.K. Slider"},
+	{"@03fb000101cf0502", "Simon"},
+	{"@0100000004180902", "Link - Tears of the Kingdom"},
+	{"@03b0000101a90502", "Papi"},
+	{"@0324000101890502", "Dizzy"},
+	{"@0217000101b30502", "Chow"},
+	{"@02b2000100c40502", "Tipper"},
+	{"@04fe000100590502", "Leonardo"},
+	{"@0100010000160002", "Toon Link"},
+	{"@0202000101030502", "Pango"},
+	{"@0781000000330002", "R.O.B. - NES"},
+	{"@09d1020102bf0e02", "Pink Gold Peach - Baseball"},
+	{"@3340000000320002", "Pac-Man"},
+	{"@0a15000103cc0502", "Marlo"},
+	{"@09c1030102700e02", "Luigi - Tennis"},
+	{"@01c1000100540502", "Lottie"},
+	{"@09c2030102750e02", "Peach - Tennis"},
+	{"@027f000100b90502", "Poncho"},
+	{"@03ec000101830502", "Mott"},
+	{"@042b000101af0502", "Zucker"},
+	{"@00130003039eff02", "Daisy - Power Up Band"},
+	{"@3480000000310002", "Mega Man"},
+	{"@035a000100850502", "Gruff"},
+	{"@05c1000003661302", "Metroid"},
+	{"@030c000101b80502", "Pompom"},
+	{"@0193000103ae0502", "Celeste"},
+	{"@04c90001030d0502", "Cashmere"},
+	{"@034a000101430502", "Diva"},
+	{"@0479000100920502", "Truffles"},
+	{"@042a0001012d0502", "Marina"},
+	{"@03fa000100d00502", "Nana"},
+	{"@09ca0301029d0e02", "Bowser Jr. - Tennis"},
+	{"@0800020002600402", "Inkling Boy - Purple"},
+	{"@04c7000100940502", "Eunice"},
+	{"@09c90501029a0e02", "Bowser - Horse Racing"},
+	{"@0008000000030002", "Donkey Kong"},
+	{"@0000040004c10102", "Elephant Mario"},
+	{"@000a000303a0ff02", "Toad - Power Up Band"},
+	{"@000a010004c20102", "Captain Toad && Talking Flower"},
+	{"@0025010004c30102", "Poplin && Prince Florian"},
+	{"@03ed000101a30502", "Rory"},
+	{"@029b000100cb0502", "Egbert"},
+	{"@0000000000000002", "Mario"},
+	{"@09cf010102b40e02", "Rosalina - Soccer"},
+	{"@01000000034e0902", "Link - Skyward Sword"},
+	{"@02870001005a0502", "Cheri"},
+	{"@0183020103a80502", "Tom Nook"},
+	{"@09c1050102720e02", "Luigi - Horse Racing"},
+	{"@09c40101027d0e02", "Yoshi - Soccer"},
+	{"@03d2000100e50502", "Mathilda"},
+	{"@09c00301026b0e02", "Mario - Tennis"},
+	{"@08000300036b0402", "Inkling Squid - Neon Purple"},
+	{"@04d2000101a70502", "Pietro"},
+	{"@09cc030102a70e02", "Baby Mario - Tennis"},
+	{"@09c8020102920e02", "Diddy Kong - Baseball"},
+	{"@0310000100f80502", "Drake"},
+	{"@050f000103140502", "Dobie"},
+	{"@0002000000360102", "Peach"},
+	{"@09c70201028d0e02", "Donkey Kong - Baseball"},
+	{"@0a1a000103d10502", "Zoe"},
+	{"@0183000100450502", "Tom Nook"},
+	{"@0357000100eb0502", "Nan"},
+	{"@09c40201027e0e02", "Yoshi - Baseball"},
+	{"@0002000000010002", "Peach"},
+	{"@0002000404411c02", "Peach - My Mario Wooden Blocks"},
+	{"@0014000002670102", "Waluigi"},
+	{"@0182000103b20502", "K.K. Slider"},
+	{"@03a50001015b0502", "Victoria"},
+	{"@026b000100e90502", "Kitty"},
+	{"@0415000101bb0502", "Rizzo"},
+	{"@09c8040102940e02", "Diddy Kong - Golf"},
+	{"@04e2000101090502", "Agent S"},
+	{"@1b92000000250002", "Greninja"},
+	{"@09c2020102740e02", "Peach - Baseball"},
+	{"@043f000101550502", "Flora"},
+	{"@04a6000100a30502", "Cole"},
+	{"@0429000100700502", "Octavian"},
+	{"@0023000003680102", "Koopa Troopa"},
+	{"@0463000101310502", "Friga"},
+	{"@0342000101280502", "Cousteau"},
+	{"@018f010101190502", "Don Resetti - Without Hat"},
+	{"@0a13000103ca0502", "Tiansheng"},
+	{"@02a2000101ba0502", "Becky"},
+	{"@0222000101440502", "Klaus"},
+	{"@041e0001015f0502", "Chadder"},
+	{"@0800010003690402", "Inkling Girl - Neon Pink"},
+	{"@0015000003670102", "Goomba"},
+	{"@3240010003640002", "Bayonetta - Player 2"},
+	{"@00000000003c0102", "Mario - Gold Edition"},
+	{"@05c00100001d0002", "Zero Suit Samus"},
+	{"@00000003039bff02", "Mario - Power Up Band"},
+	{"@0740000000100002", "Pit"},
+	{"@0495000101920502", "Dotty"},
+	{"@01b6000100ae0502", "Katie"},
+	{"@0101010000170002", "Sheik"},
+	{"@09d1050102c20e02", "Pink Gold Peach - Horse Racing"},
+	{"@01af0001011c0502", "Jingle"},
+	{"@026f000101900502", "Lolly"},
+	{"@08000100025f0402", "Inkling Girl - Lime Green"},
+	{"@09d0050102bd0e02", "Metal Mario - Horse Racing"},
+	{"@08050200041b0402", "Octoling - Blue"},
+	{"@2106000003601202", "Alm"},
+	{"@37c10000038c0002", "Richter"},
+	{"@033f0001008f0502", "Jeremiah"},
+	{"@09c9040102990e02", "Bowser - Golf"},
+	{"@019e000100ad0502", "Booker"},
+	{"@02ec000101c40502", "Lucky"},
+	{"@0182000002400502", "K. K. Slider"},
+	{"@01b5000100510502", "Luna"},
+	{"@049e000101b70502", "Doc"},
+	{"@0454000101ae0502", "Celia"},
+	{"@0399000101c20502", "Hippeux"},
+	{"@09cd010102aa0e02", "Baby Luigi - Soccer"},
+	{"@04ec000100770502", "Poppy"},
+	{"@04b2000101b90502", "Tank"},
+	{"@01c1020103bb0502", "Lottie - Island"},
+	{"@02f9000101020502", "Marcel"},
+	{"@018a000100a90502", "Reese"},
+	{"@06420000035f1102", "Pikmin"},
+	{"@03a40001014f0502", "Buck"},
+	{"@04e7000101320502", "Ricky"},
+	{"@0461000101610502", "Cube"},
+	{"@3840000104241902", "Yuga Ohdo"},
+	{"@09ce010102af0e02", "Birdo - Soccer"},
+	{"@09c30301027a0e02", "Daisy - Tennis"},
+	{"@03d6000101570502", "Astrid"},
+	{"@01810100023f0502", "Isabelle - Winter Outfit"},
+	{"@0193000002480502", "Celeste"},
+	{"@0003010200420302", "Pink Yarn Yoshi"},
+	{"@3804000103971702", "Ganda"},
+	{"@09c3020102790e02", "Daisy - Baseball"},
+	{"@09c9030102980e02", "Bowser - Tennis"},
+	{"@0469000101640502", "Boomer"},
+	{"@0009000002650102", "Diddy Kong"},
+	{"@000900030432ff02", "Diddy Kong - Power Up Band"},
+	{"@03c40001012b0502", "Canberra"},
+	{"@09d1040102c10e02", "Pink Gold Peach - Golf"},
+	{"@050b000100990502", "Chief"},
+	{"@08000200036a0402", "Inkling Boy - Neon Green"},
+	{"@0394000100890502", "Biff"},
+	{"@06c00000000f0002", "Little Mac"},
+	{"@03b1000100f00502", "Julian"},
+	{"@0265000101540502", "Moe"},
+	{"@09cc020102a60e02", "Baby Mario - Baseball"},
+	{"@01a1000101100502", "Phyllis"},
+	{"@0a0a000103c10502", "Megan"},
+	{"@0003010200410302", "Green Yarn Yoshi"},
+	{"@02f3000102f90502", "Maddie"},
+	{"@04ce000100db0502", "Wendy"},
+	{"@04dd000100a20502", "Peanut"},
+	{"@0a19000103d00502", "Chabwick"},
+	{"@0198000100b10502", "Leila"},
+	{"@22410000041e0002", "Pyra"},
+	{"@0374010103190502", "Rilla"},
+	{"@0180000000080002", "Villager"},
+	{"@0188000103af0502", "Mabel"},
+	{"@049b000100610502", "Tiffany"},
+	{"@09ca0401029e0e02", "Bowser Jr. - Golf"},
+	{"@1f03000002570c02", "Waddle Dee"},
+	{"@02c7000101220502", "Del"},
+	{"@02f2000100cc0502", "Cookie"},
+	{"@09c70301028e0e02", "Donkey Kong - Tennis"},
+	{"@01810000037d0002", "Isabelle"},
+	{"@34c0000002530002", "Ryu"},
+	{"@34c2000004aa1d02", "Luke"},
+	{"@34c2000104ab1d02", "Luke"},
+	{"@34c3000004ac1d02", "Jamie"},
+	{"@34c3000104ad1d02", "Jamie"},
+	{"@34cc000104b71d02", "Manon"},
+	{"@34c4000004ae1d02", "Kimberly"},
+	{"@34c4000104af1d02", "Kimberly"},
+	{"@34cd000104b81d02", "Marisa"},
+	{"@34d0000104bb1d02", "Lily"},
+	{"@34ce000104b91d02", "JP"},
+	{"@34c7000104b21d02", "Juri"},
+	{"@34cb000104b61d02", "Dee Jay"},
+	{"@34d1000104bc1d02", "Cammy"},
+	{"@34c0000104a81d02", "Ryu"},
+	{"@34ca000104b51d02", "E. Honda"},
+	{"@34c8000104b31d02", "Blanka"},
+	{"@34c6000104b11d02", "Guile"},
+	{"@34c1000104a91d02", "Ken"},
+	{"@34c5000104b01d02", "Chun-Li"},
+	{"@34cf000104ba1d02", "Zangief"},
+	{"@34c9000104b41d02", "Dhalsim"},
+	{"@34d2000104bd1d02", "Rashid"},
+	{"@34d3000104be1d02", "A.K.I"},
+	{"@34d4000104bf1d02", "Ed"},
+	{"@34d5000104c01d02", "Akuma"},
+	{"@34d6000104e11d02", "M. Bison"},
+	{"@3c80000104e81d02", "Terry"},
+	{"@3c81000104f21d02", "Mai"},
+	{"@34d8000104e31d02", "Elena"},
+	{"@34d9000104e41d02", "Sagat"},
+	{"@34da000104e51d02", "C. Viper"},
+	{"@34db000104e61d02", "Alex"},
+	{"@34dc000104e71d02", "Ingrid"},
+	{"@34c2000104cd1d02", "Luke"},
+	{"@34c3000104ce1d02", "Jamie"},
+	{"@34cc000104d71d02", "Manon"},
+	{"@34c4000104cf1d02", "Kimberly"},
+	{"@34cd000104d81d02", "Marisa"},
+	{"@34d0000104db1d02", "Lily"},
+	{"@34ce000104d91d02", "JP"},
+	{"@34c7000104d21d02", "Juri"},
+	{"@34cb000104d61d02", "Dee Jay"},
+	{"@34d1000104dc1d02", "Cammy"},
+	{"@34c0000104cb1d02", "Ryu"},
+	{"@34ca000104d51d02", "E. Honda"},
+	{"@34c8000104d31d02", "Blanka"},
+	{"@34c6000104d11d02", "Guile"},
+	{"@34c1000104cc1d02", "Ken"},
+	{"@34c5000104d01d02", "Chun-Li"},
+	{"@34cf000104da1d02", "Zangief"},
+	{"@34c9000104d41d02", "Dhalsim"},
+	{"@34d2000104dd1d02", "Rashid"},
+	{"@34d3000104de1d02", "A.K.I"},
+	{"@34d4000104df1d02", "Ed"},
+	{"@34d5000104e01d02", "Akuma"},
+	{"@34d6000104eb1d02", "M. Bison"},
+	{"@3c80000104f11d02", "Terry"},
+	{"@3c81000104f31d02", "Mai"},
+	{"@34d8000104ec1d02", "Elena"},
+	{"@34d9000104ed1d02", "Sagat"},
+	{"@34da000104ee1d02", "C. Viper"},
+	{"@34db000104ef1d02", "Alex"},
+	{"@34dc000104f01d02", "Ingrid"},
+	{"@0398000100bf0502", "Harry"},
+	{"@0401000100660502", "Deli"},
+	{"@02e00101031d0502", "Chelsea"},
+	{"@01020100001b0002", "Ganondorf"},
+	{"@09c30401027b0e02", "Daisy - Golf"},
+	{"@09d1030102c00e02", "Pink Gold Peach - Tennis"},
+	{"@03e6000100ec0502", "Bud"},
+	{"@3a00000003a10002", "Joker"},
+	{"@03710001005c0502", "Al"},
+	{"@03fe000101a40502", "Elise"},
+	{"@05c3000003800002", "Dark Samus"},
+	{"@03db0001006d0502", "Marcie"},
+	{"@0216000100570502", "Curt"},
+	{"@05150001005b0502", "Kyle"},
+	{"@2105010003630002", "Corrin - Player 2"},
+	{"@024a000101d10502", "Angus"},
+	{"@0478000101630502", "Curly"},
+	{"@00030003039fff02", "Yoshi - Power Up Band"},
+	{"@09c00401026c0e02", "Mario - Golf"},
+	{"@09cd040102ad0e02", "Baby Luigi - Golf"},
+	{"@09c5050102860e02", "Wario - Horse Racing"},
+	{"@09ca0201029c0e02", "Bowser Jr. - Baseball"},
+	{"@01810201011a0502", "Isabelle - Kimono"},
+	{"@033c000101000502", "Drift"},
+	{"@0327000101c30502", "Margie"},
+	{"@030d000101840502", "Mallary"},
+	{"@09c9020102970e02", "Bowser - Baseball"},
+	{"@1f02000002560c02", "King Dedede"},
+	{"@09c10201026f0e02", "Luigi - Baseball"},
+	{"@07820000002f0002", "Duck Hunt"},
+	{"@03ab000103160502", "Cleo"},
+	{"@018c010101180502", "Digby - Raincoat"},
+	{"@09cf050102b80e02", "Rosalina - Horse Racing"},
+	{"@0a0d000103c40502", "Cyd"},
+	{"@0005000000390102", "Bowser"},
+	{"@0a20000103d70502", "Faith"},
+	{"@03ad000101b20502", "Annalise"},
+	{"@00000000003d0102", "Mario - Silver Edition"},
+	{"@1bd7000003860002", "Incineroar"},
+	{"@09c4050102810e02", "Yoshi - Horse Racing"},
+	{"@02c9000100cd0502", "Sly"},
+	{"@0299000100950502", "Goose"},
+	{"@0804000003770402", "Marina"},
+	{"@0804000004390402", "Marina - Side Order"},
+	{"@32400000025b0002", "Bayonetta"},
+	{"@03080001014d0502", "Joey"},
+	{"@1d40000003870002", "Pokemon Trainer"},
+	{"@0262000101370502", "Tangy"},
+	{"@0488000100980502", "Pancetti"},
+	{"@05c20000037f0002", "Ridley"},
+	{"@09c70401028f0e02", "Donkey Kong - Golf"},
+	{"@036d000103040502", "Louie"},
+	{"@040c000101590502", "Dora"},
+	{"@02a50001018c0502", "Broffina"},
+	{"@043e000101490502", "Blanche"},
+	{"@09c00501026d0e02", "Mario - Horse Racing"},
+	{"@03ee0001008b0502", "Lionel"},
+	{"@023d000101b50502", "Jacques"},
+	{"@04c5000101010502", "Vesta"},
+	{"@0356000101350502", "Chevre"},
+	{"@02fc0001018f0502", "Shep"},
+	{"@35c20000036d0a02", "Specter Knight"},
+	{"@0511000101950502", "Fang"},
+	{"@0181050103bf0502", "Isabelle - Sweater"},
+	{"@04970001007a0502", "Snake"},
+	{"@0a1c000103d30502", "Rio"},
+	{"@028b000100e30502", "Pekoe"},
+	{"@0193000101740502", "Celeste"},
+	{"@02b70001030f0502", "Norma"},
+	{"@02eb000100de0502", "Butch"},
+	{"@04ee0001014b0502", "Marshal"},
+	{"@0805030003900402", "Octoling Octopus"},
+	{"@0000000002380602", "8-Bit Mario Classic Color"},
+	{"@0000050004e90102", "Mario and Luma"},
+	{"@0260000100d20502", "Olivia"},
+	{"@01010000000e0002", "Zelda"},
+	{"@05c0000003651302", "Samus Aran"},
+	{"@02d8000100e20502", "Zell"},
+	{"@03830001009b0502", "Clay"},
+	{"@09cb030102a20e02", "Boo - Tennis"},
+	{"@02ea000101800502", "Goldie"},
+	{"@3802000103951702", "Yabe"},
+	{"@22800000002c0002", "Ness"},
+	{"@35c10000036c0a02", "Plague Knight"},
+	{"@03410001030e0502", "Tad"},
+	{"@041d0001018a0502", "Penelope"},
+	{"@09cf040102b70e02", "Rosalina - Golf"},
+	{"@07420000001f0002", "Palutena"},
+	{"@04cd000101520502", "Curlos"},
+	{"@04100001007f0502", "Samson"},
+	{"@01a6000100500502", "Saharah"},
+	{"@03d9000101a50502", "Walt"},
+	{"@043b000103030502", "Julia"},
+	{"@037e000101560502", "Hamlet"},
+	{"@0220000100fd0502", "Charlise"},
+	{"@03c0000103100502", "Gonzo"},
+	{"@0323000100760502", "Opal"},
+	{"@046c0001008c0502", "Flo"},
+	{"@02a4000100720502", "Knox"},
+	{"@0008000002640102", "Donkey Kong"},
+	{"@00080100042f1a02", "Donkey Kong && Pauline"},
+	{"@000800030431ff02", "Donkey Kong - Power Up Band"},
+	{"@02fb000100900502", "Cherry"},
+	{"@018d0000024c0502", "Rover"},
+	{"@03820001016b0502", "Soleil"},
+	{"@028d000101bd0502", "Barold"},
+	{"@09ce020102b00e02", "Birdo - Baseball"},
+	{"@000a000000380102", "Toad"},
+	{"@04000001006f0502", "Shari"},
+	{"@01a30001004a0502", "Joan"},
+	{"@09ca0101029b0e02", "Bowser Jr. - Soccer"},
+	{"@04ed000100620502", "Sheldon"},
+	{"@028c0001013e0502", "Chester"},
+	{"@09cd050102ae0e02", "Baby Luigi - Horse Racing"},
+	{"@021f000103170502", "Ike"},
+	{"@0197000101770502", "Leilani"},
+	{"@0514000101530502", "Skye"},
+	{"@0a02000103b30502", "C.J."},
+	{"@09d0020102ba0e02", "Metal Mario - Baseball"},
+	{"@09c00201026a0e02", "Mario - Baseball"},
+	{"@0194000103b60502", "Kicks"},
+	{"@04c8000102ed0502", "Stella"},
+	{"@0510000101070502", "Freya"},
+	{"@0a0e000103c50502", "Judy"},
+	{"@036a0001019d0502", "Peewee"},
+	{"@0183030103be0502", "Tom Nook - Coat"},
+	{"@09c8030102930e02", "Diddy Kong - Tennis"},
+	{"@018f000100b30502", "Don Resetti"},
+	{"@04b9000101600502", "Merengue"},
+	{"@04d10001009e0502", "Muffy"},
+	{"@22430000043d1b02", "Noah"},
+	{"@22440000043e1b02", "Mio"},
+	{"@3f000000042e0002", "Sora"},
+	{"@1f00000004c41e03", "Kirby (&& Warp Star)"},
+	{"@1f03010004c91e03", "Bandana Waddle Dee (&& Winged Star)"}
+};
+
+static std::map<std::string, std::string> amiibos_series = {
+	{"0a", "Shovel Knight"},
+	{"0c", "Kirby"},
+	{"0e", "Mario Sports Superstars"},
+	{"0d", "Pokemon"},
+	{"0f", "Monster Hunter"},
+	{"06", "8-bit Mario"},
+	{"12", "Fire Emblem"},
+	{"13", "Metroid"},
+	{"10", "BoxBoy!"},
+	{"11", "Pikmin"},
+	{"05", "Animal Crossing"},
+	{"04", "Splatoon"},
+	{"14", "Others"},
+	{"15", "Mega Man"},
+	{"09", "Legend Of Zelda"},
+	{"18", "Monster Hunter Rise"},
+	{"19", "Yu-Gi-Oh!"},
+	{"01", "Super Mario Bros."},
+	{"ff", "Super Nintendo World"},
+	{"00", "Super Smash Bros."},
+	{"03", "Yoshi's Woolly World"},
+	{"02", "Chibi-Robo!"},
+	{"07", "Skylanders"},
+	{"16", "Diablo"},
+	{"17", "Power Pros"},
+	{"1a", "Donkey Kong"},
+	{"1b", "Xenoblade Chronicles 3"},
+	{"1c", "My Mario Wooden Blocks"},
+	{"1d", "Street Fighter 6"},
+	{"1e", "Kirby Air Riders"},
+	{"21", "Pragmata"}
+};
+
+static std::map<std::string, std::map<std::string, int>> amiibos_usages = {
+	{"0004000000064900", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@0008000000030002", 1}, {"@0008000002640102", 1}, {"@00080100042f1a02", 1}, {"@0008ff00023b0702", 1}, {"@0100000000040002", 1}, {"@01000000034b0902", 1}, {"@01000000034c0902", 1}, {"@01000000034d0902", 1}, {"@01000000034e0902", 1}, {"@01000000034f0902", 1}, {"@0100000003530902", 1}, {"@0100000003540902", 1}, {"@01000000037c0002", 1}, {"@0100000003990902", 1}, {"@0100000004180902", 1}, {"@0100010000160002", 1}, {"@0100010003500902", 1}, {"@01010000000e0002", 1}, {"@0101000003520902", 1}, {"@0101000003560902", 1}, {"@0101000004190902", 1}, {"@0101010000170002", 1}, {"@0101030004140902", 1}, {"@0580000000050002", 1}, {"@05c0000000060002", 1}, {"@05c0000003651302", 1}, {"@05c0000004121302", 1}, {"@05c00000043a1302", 1}, {"@05c00000043b1302", 1}, {"@05c00100001d0002", 1}, {"@0600000000120002", 1}, {"@06400100001e0002", 1}, {"@3340000000320002", 1} } },
+	{"000400000006CC00", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@0008000000030002", 1}, {"@0008000002640102", 1}, {"@00080100042f1a02", 1}, {"@0008ff00023b0702", 1}, {"@0100000000040002", 1}, {"@01000000034b0902", 1}, {"@01000000034c0902", 1}, {"@01000000034d0902", 1}, {"@01000000034e0902", 1}, {"@01000000034f0902", 1}, {"@0100000003530902", 1}, {"@0100000003540902", 1}, {"@01000000037c0002", 1}, {"@0100000003990902", 1}, {"@0100000004180902", 1}, {"@0100010000160002", 1}, {"@0100010003500902", 1}, {"@01010000000e0002", 1}, {"@0101000003520902", 1}, {"@0101000003560902", 1}, {"@0101000004190902", 1}, {"@0101010000170002", 1}, {"@0101030004140902", 1}, {"@0580000000050002", 1}, {"@05c0000000060002", 1}, {"@05c0000003651302", 1}, {"@05c0000004121302", 1}, {"@05c00000043a1302", 1}, {"@05c00000043b1302", 1}, {"@05c00100001d0002", 1}, {"@0600000000120002", 1}, {"@06400100001e0002", 1}, {"@3340000000320002", 1} } },
+	{"000400000015A300", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@0008000000030002", 1}, {"@0008000002640102", 1}, {"@00080100042f1a02", 1}, {"@0008ff00023b0702", 1}, {"@0100000000040002", 1}, {"@01000000034b0902", 1}, {"@01000000034c0902", 1}, {"@01000000034d0902", 1}, {"@01000000034e0902", 1}, {"@01000000034f0902", 1}, {"@0100000003530902", 1}, {"@0100000003540902", 1}, {"@01000000037c0002", 1}, {"@0100000003990902", 1}, {"@0100000004180902", 1}, {"@0100010000160002", 1}, {"@0100010003500902", 1}, {"@01010000000e0002", 1}, {"@0101000003520902", 1}, {"@0101000003560902", 1}, {"@0101000004190902", 1}, {"@0101010000170002", 1}, {"@0101030004140902", 1}, {"@0580000000050002", 1}, {"@05c0000000060002", 1}, {"@05c0000003651302", 1}, {"@05c0000004121302", 1}, {"@05c00000043a1302", 1}, {"@05c00000043b1302", 1}, {"@05c00100001d0002", 1}, {"@0600000000120002", 1}, {"@06400100001e0002", 1}, {"@3340000000320002", 1} } },
+	{"000400000015C000", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@0008000000030002", 1}, {"@0008000002640102", 1}, {"@00080100042f1a02", 1}, {"@0008ff00023b0702", 1}, {"@0100000000040002", 1}, {"@01000000034b0902", 1}, {"@01000000034c0902", 1}, {"@01000000034d0902", 1}, {"@01000000034e0902", 1}, {"@01000000034f0902", 1}, {"@0100000003530902", 1}, {"@0100000003540902", 1}, {"@01000000037c0002", 1}, {"@0100000003990902", 1}, {"@0100000004180902", 1}, {"@0100010000160002", 1}, {"@0100010003500902", 1}, {"@01010000000e0002", 1}, {"@0101000003520902", 1}, {"@0101000003560902", 1}, {"@0101000004190902", 1}, {"@0101010000170002", 1}, {"@0101030004140902", 1}, {"@0580000000050002", 1}, {"@05c0000000060002", 1}, {"@05c0000003651302", 1}, {"@05c0000004121302", 1}, {"@05c00000043a1302", 1}, {"@05c00000043b1302", 1}, {"@05c00100001d0002", 1}, {"@0600000000120002", 1}, {"@06400100001e0002", 1}, {"@3340000000320002", 1} } },
+	{"0004000000162F00", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0003000000020002", 1}, {"@0003000000370102", 1}, {"@0003000404421c02", 1}, {"@0003010200410302", 1}, {"@0003010200420302", 1}, {"@0003010200430302", 1}, {"@00030102023e0302", 1}, {"@0004000002620102", 1}, {"@0004010000130002", 1}, {"@0004010004ea0102", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@0006000000150002", 1}, {"@00070000001a0002", 1}, {"@0007000002630102", 1}, {"@0008000000030002", 1}, {"@0008000002640102", 1}, {"@00080100042f1a02", 1}, {"@0008ff00023b0702", 1}, {"@00090000000d0002", 1}, {"@0009000002650102", 1}, {"@000a000000380102", 1}, {"@000a010004c20102", 1}, {"@0100000000040002", 1}, {"@01000000034b0902", 1}, {"@01000000034c0902", 1}, {"@01000000034d0902", 1}, {"@01000000034e0902", 1}, {"@01000000034f0902", 1}, {"@0100000003530902", 1}, {"@0100000003540902", 1}, {"@01000000037c0002", 1}, {"@0100000003990902", 1}, {"@0100000004180902", 1}, {"@0100010000160002", 1}, {"@0100010003500902", 1}, {"@01010000000e0002", 1}, {"@0101000003520902", 1}, {"@0101000003560902", 1}, {"@0101000004190902", 1}, {"@0101010000170002", 1}, {"@0101030004140902", 1}, {"@01020100001b0002", 1}, {"@01020100041a0902", 1}, {"@0180000000080002", 1}, {"@0580000000050002", 1}, {"@05810000001c0002", 1}, {"@05c0000000060002", 1}, {"@05c0000003651302", 1}, {"@05c0000004121302", 1}, {"@05c00000043a1302", 1}, {"@05c00000043b1302", 1}, {"@05c00100001d0002", 1}, {"@0600000000120002", 1}, {"@06400100001e0002", 1}, {"@06c00000000f0002", 1}, {"@0700000000070002", 1}, {"@0740000000100002", 1}, {"@0741000000200002", 1}, {"@07420000001f0002", 1}, {"@07800000002d0002", 1}, {"@07810000002e0002", 1}, {"@0781000000330002", 1}, {"@07820000002f0002", 1}, {"@07c0000000210002", 1}, {"@07c0010000220002", 1}, {"@07c0020000230002", 1}, {"@08000100003e0402", 1}, {"@08000100025f0402", 1}, {"@0800010003690402", 1}, {"@0800010003820002", 1}, {"@0800010004150402", 1}, {"@08000200003f0402", 1}, {"@0800020002600402", 1}, {"@08000200036a0402", 1}, {"@0800030000400402", 1}, {"@0800030002610402", 1}, {"@08000300036b0402", 1}, {"@1f000000000a0002", 1}, {"@1f00000002540c02", 1}, {"@1f01000000270002", 1}, {"@1f01000002550c02", 1}, {"@1f02000000280002", 1}, {"@1f02000002560c02", 1}, {"@21000000000b0002", 1}, {"@2101000000180002", 1}, {"@2102000000290002", 1}, {"@21030000002a0002", 1}, {"@22400000002b0002", 1}, {"@22800000002c0002", 1}, {"@22c00000003a0202", 1} } },
+	{"0004000000163000", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0003000000020002", 1}, {"@0003000000370102", 1}, {"@0003000404421c02", 1}, {"@0003010200410302", 1}, {"@0003010200420302", 1}, {"@0003010200430302", 1}, {"@00030102023e0302", 1}, {"@0004000002620102", 1}, {"@0004010000130002", 1}, {"@0004010004ea0102", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@0006000000150002", 1}, {"@00070000001a0002", 1}, {"@0007000002630102", 1}, {"@0008000000030002", 1}, {"@0008000002640102", 1}, {"@00080100042f1a02", 1}, {"@0008ff00023b0702", 1}, {"@00090000000d0002", 1}, {"@0009000002650102", 1}, {"@000a000000380102", 1}, {"@000a010004c20102", 1}, {"@0100000000040002", 1}, {"@01000000034b0902", 1}, {"@01000000034c0902", 1}, {"@01000000034d0902", 1}, {"@01000000034e0902", 1}, {"@01000000034f0902", 1}, {"@0100000003530902", 1}, {"@0100000003540902", 1}, {"@01000000037c0002", 1}, {"@0100000003990902", 1}, {"@0100000004180902", 1}, {"@0100010000160002", 1}, {"@0100010003500902", 1}, {"@01010000000e0002", 1}, {"@0101000003520902", 1}, {"@0101000003560902", 1}, {"@0101000004190902", 1}, {"@0101010000170002", 1}, {"@0101030004140902", 1}, {"@01020100001b0002", 1}, {"@01020100041a0902", 1}, {"@0180000000080002", 1}, {"@0580000000050002", 1}, {"@05810000001c0002", 1}, {"@05c0000000060002", 1}, {"@05c0000003651302", 1}, {"@05c0000004121302", 1}, {"@05c00000043a1302", 1}, {"@05c00000043b1302", 1}, {"@05c00100001d0002", 1}, {"@0600000000120002", 1}, {"@06400100001e0002", 1}, {"@06c00000000f0002", 1}, {"@0700000000070002", 1}, {"@0740000000100002", 1}, {"@0741000000200002", 1}, {"@07420000001f0002", 1}, {"@07800000002d0002", 1}, {"@07810000002e0002", 1}, {"@0781000000330002", 1}, {"@07820000002f0002", 1}, {"@07c0000000210002", 1}, {"@07c0010000220002", 1}, {"@07c0020000230002", 1}, {"@08000100003e0402", 1}, {"@08000100025f0402", 1}, {"@0800010003690402", 1}, {"@0800010003820002", 1}, {"@0800010004150402", 1}, {"@08000200003f0402", 1}, {"@0800020002600402", 1}, {"@08000200036a0402", 1}, {"@0800030000400402", 1}, {"@0800030002610402", 1}, {"@08000300036b0402", 1}, {"@1f000000000a0002", 1}, {"@1f00000002540c02", 1}, {"@1f01000000270002", 1}, {"@1f01000002550c02", 1}, {"@1f02000000280002", 1}, {"@1f02000002560c02", 1}, {"@21000000000b0002", 1}, {"@2101000000180002", 1}, {"@2102000000290002", 1}, {"@21030000002a0002", 1}, {"@22400000002b0002", 1}, {"@22800000002c0002", 1}, {"@22c00000003a0202", 1} } },
+	{"0004000000183600", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0003000000020002", 1}, {"@0003000000370102", 1}, {"@0003000404421c02", 1}, {"@0003010200410302", 1}, {"@0003010200420302", 1}, {"@0003010200430302", 1}, {"@00030102023e0302", 1}, {"@0004000002620102", 1}, {"@0004010000130002", 1}, {"@0004010004ea0102", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@0006000000150002", 1}, {"@00070000001a0002", 1}, {"@0007000002630102", 1}, {"@0008000000030002", 1}, {"@0008000002640102", 1}, {"@00080100042f1a02", 1}, {"@0008ff00023b0702", 1}, {"@00090000000d0002", 1}, {"@0009000002650102", 1}, {"@000a000000380102", 1}, {"@000a010004c20102", 1}, {"@0100000000040002", 1}, {"@01000000034b0902", 1}, {"@01000000034c0902", 1}, {"@01000000034d0902", 1}, {"@01000000034e0902", 1}, {"@01000000034f0902", 1}, {"@0100000003530902", 1}, {"@0100000003540902", 1}, {"@01000000037c0002", 1}, {"@0100000003990902", 1}, {"@0100000004180902", 1}, {"@0100010000160002", 1}, {"@0100010003500902", 1}, {"@01010000000e0002", 1}, {"@0101000003520902", 1}, {"@0101000003560902", 1}, {"@0101000004190902", 1}, {"@0101010000170002", 1}, {"@0101030004140902", 1}, {"@01020100001b0002", 1}, {"@01020100041a0902", 1}, {"@0180000000080002", 1}, {"@01810000024b0502", 1}, {"@0181000100440502", 1}, {"@0181000101d40502", 1}, {"@01810100023f0502", 1}, {"@0181010100b40502", 1}, {"@01810201011a0502", 1}, {"@0181030101700502", 1}, {"@0181040103aa0502", 1}, {"@0181050103bf0502", 1}, {"@0182000002400502", 1}, {"@0182000100a80502", 1}, {"@0182000101d80502", 1}, {"@0182000103b20502", 1}, {"@0182010100460502", 1}, {"@0183000002420502", 1}, {"@0183000100450502", 1}, {"@01830101010e0502", 1}, {"@0183020103a80502", 1}, {"@0183030103be0502", 1}, {"@01840000024d0502", 1}, {"@0184050103a90502", 1}, {"@01850001004b0502", 1}, {"@0185020101170502", 1}, {"@0185040101790502", 1}, {"@0186010100af0502", 1}, {"@0186030101750502", 1}, {"@0187000100470502", 1}, {"@0187000103b00502", 1}, {"@0188000002410502", 1}, {"@0188000101120502", 1}, {"@0188000103af0502", 1}, {"@0189000100ab0502", 1}, {"@0189010103b10502", 1}, {"@018a000002450502", 1}, {"@018a000100a90502", 1}, {"@018b000002460502", 1}, {"@018b000101150502", 1}, {"@018c000002430502", 1}, {"@018c0001004c0502", 1}, {"@018c010101180502", 1}, {"@018d0000024c0502", 1}, {"@018d0001010c0502", 1}, {"@018e000002490502", 1}, {"@018e000100490502", 1}, {"@018e010101780502", 1}, {"@018f000100b30502", 1}, {"@018f010101190502", 1}, {"@0190000101710502", 1}, {"@01910001004e0502", 1}, {"@0192000002470502", 1}, {"@01920001010d0502", 1}, {"@0192000103ad0502", 1}, {"@0193000002480502", 1}, {"@0193000101740502", 1}, {"@0193000103ae0502", 1}, {"@01940000024a0502", 1}, {"@0194000100aa0502", 1}, {"@0194000103b60502", 1}, {"@0195000100b00502", 1}, {"@01960000024e0502", 1}, {"@0196000100480502", 1}, {"@0197000101770502", 1}, {"@0198000100b10502", 1}, {"@0199000101160502", 1}, {"@019a000100b70502", 1}, {"@019b000100b60502", 1}, {"@019c000101730502", 1}, {"@019d000100ac0502", 1}, {"@019e000100ad0502", 1}, {"@019f000101110502", 1}, {"@01a00001010f0502", 1}, {"@01a1000101100502", 1}, {"@01a20001017d0502", 1}, {"@01a2000103b90502", 1}, {"@01a30001004a0502", 1}, {"@01a40001004d0502", 1}, {"@01a5000101720502", 1}, {"@01a6000100500502", 1}, {"@01a6000103b70502", 1}, {"@01a7000101140502", 1}, {"@01a80001004f0502", 1}, {"@01a80101017e0502", 1}, {"@01a9000101760502", 1}, {"@01aa000100530502", 1}, {"@01ab0001017c0502", 1}, {"@01ac0001017f0502", 1}, {"@01ad000100b80502", 1}, {"@01ae0001011b0502", 1}, {"@01af0001011c0502", 1}, {"@01b0000100520502", 1}, {"@01b1000100b20502", 1}, {"@01b10101017b0502", 1}, {"@01b3000100b50502", 1}, {"@01b4000101130502", 1}, {"@01b5000100510502", 1}, {"@01b6000100ae0502", 1}, {"@01c1000002440502", 1}, {"@01c1000100540502", 1}, {"@01c10101017a0502", 1}, {"@01c1020103bb0502", 1}, {"@0200000100a10502", 1}, {"@02010001016a0502", 1}, {"@0202000101030502", 1}, {"@02030001019a0502", 1}, {"@0206000103120502", 1}, {"@0208000100960502", 1}, {"@02090001019f0502", 1}, {"@0214000100e40502", 1}, {"@0215000101820502", 1}, {"@0216000100570502", 1}, {"@0217000101b30502", 1}, {"@02190001007e0502", 1}, {"@021a000100da0502", 1}, {"@021b000100800502", 1}, {"@021c000102f70502", 1}, {"@021d000101cd0502", 1}, {"@021e000101230502", 1}, {"@021f000103170502", 1}, {"@0220000100fd0502", 1}, {"@02210001013c0502", 1}, {"@0222000101440502", 1}, {"@022d000100f20502", 1}, {"@022e000101d30502", 1}, {"@022f0001011e0502", 1}, {"@0230000101d20502", 1}, {"@02310001006a0502", 1}, {"@0232000102ea0502", 1}, {"@0233000103060502", 1}, {"@0235000100840502", 1}, {"@0238000102f80502", 1}, {"@023c000100bd0502", 1}, {"@023d000101b50502", 1}, {"@023e000100d10502", 1}, {"@023f000101660502", 1}, {"@024a000101d10502", 1}, {"@024b000101260502", 1}, {"@024d000102f60502", 1}, {"@024f000100810502", 1}, {"@0251000100c10502", 1}, {"@0252000100fe0502", 1}, {"@025d000100550502", 1}, {"@025e000101250502", 1}, {"@025f000101c50502", 1}, {"@025f000101d70502", 1}, {"@0260000100d20502", 1}, {"@0261000100650502", 1}, {"@0262000101370502", 1}, {"@0263000100750502", 1}, {"@0264000101ac0502", 1}, {"@0265000101540502", 1}, {"@0266000100680502", 1}, {"@0267000101080502", 1}, {"@02680001007d0502", 1}, {"@02690001011f0502", 1}, {"@026a000101460502", 1}, {"@026b000100e90502", 1}, {"@026c000100c30502", 1}, {"@026d0001013f0502", 1}, {"@026e000100ba0502", 1}, {"@026f000101900502", 1}, {"@0270000100ff0502", 1}, {"@02710001019b0502", 1}, {"@0272000101860502", 1}, {"@027d000100630502", 1}, {"@027e000101690502", 1}, {"@027f000100b90502", 1}, {"@0280000100830502", 1}, {"@0281000101200502", 1}, {"@0282000101810502", 1}, {"@0282000101d60502", 1}, {"@0283000100c70502", 1}, {"@0284000102fe0502", 1}, {"@0286000103130502", 1}, {"@02870001005a0502", 1}, {"@028a000102e90502", 1}, {"@028b000100e30502", 1}, {"@028c0001013e0502", 1}, {"@028d000101bd0502", 1}, {"@028e0001019e0502", 1}, {"@028f0101031a0502", 1}, {"@0299000100950502", 1}, {"@029a000100ee0502", 1}, {"@029b000100cb0502", 1}, {"@029e0001013d0502", 1}, {"@02a2000101ba0502", 1}, {"@02a3000102ff0502", 1}, {"@02a4000100720502", 1}, {"@02a50001018c0502", 1}, {"@02a6000101240502", 1}, {"@02b1000100690502", 1}, {"@02b2000100c40502", 1}, {"@02b70001030f0502", 1}, {"@02b80001019c0502", 1}, {"@02c3000100dc0502", 1}, {"@02c4000100670502", 1}, {"@02c5000103080502", 1}, {"@02c7000101220502", 1}, {"@02c9000100cd0502", 1}, {"@02ca000101ca0502", 1}, {"@02cb000101360502", 1}, {"@02d6000100560502", 1}, {"@02d7000101300502", 1}, {"@02d8000100e20502", 1}, {"@02d9000101c80502", 1}, {"@02da000101330502", 1}, {"@02db0001005e0502", 1}, {"@02dc000100be0502", 1}, {"@02dd000100ea0502", 1}, {"@02de0001009c0502", 1}, {"@02df000101910502", 1}, {"@02e00101031d0502", 1}, {"@02ea000101800502", 1}, {"@02ea000101d50502", 1}, {"@02eb000100de0502", 1}, {"@02ec000101c40502", 1}, {"@02ed0001015a0502", 1}, {"@02ee000101990502", 1}, {"@02ef000100580502", 1}, {"@02f0000100a70502", 1}, {"@02f1000101450502", 1}, {"@02f2000100cc0502", 1}, {"@02f3000102f90502", 1}, {"@02f4000103050502", 1}, {"@02f8000101380502", 1}, {"@02f9000101020502", 1}, {"@02fa000100970502", 1}, {"@02fb000100900502", 1}, {"@02fc0001018f0502", 1}, {"@0307000100640502", 1}, {"@03080001014d0502", 1}, {"@0309000100c60502", 1}, {"@030a000101c70502", 1}, {"@030b000100790502", 1}, {"@030c000101b80502", 1}, {"@030d000101840502", 1}, {"@030e0001012f0502", 1}, {"@030f0001016d0502", 1}, {"@0310000100f80502", 1}, {"@0311000100d60502", 1}, {"@0312000103090502", 1}, {"@0313000101210502", 1}, {"@0314000102f40502", 1}, {"@0316000101c00502", 1}, {"@0317000100a60502", 1}, {"@03180001006c0502", 1}, {"@0323000100760502", 1}, {"@0324000101890502", 1}, {"@03250001010a0502", 1}, {"@0326000101390502", 1}, {"@0327000101c30502", 1}, {"@0328000102eb0502", 1}, {"@03290001009d0502", 1}, {"@032a000103070502", 1}, {"@032c000101480502", 1}, {"@032d000100bc0502", 1}, {"@032e0101031c0502", 1}, {"@03380001011d0502", 1}, {"@0339000101b10502", 1}, {"@033a000101cc0502", 1}, {"@033b000100fa0502", 1}, {"@033c000101000502", 1}, {"@033d0001013a0502", 1}, {"@033e000101a20502", 1}, {"@033f0001008f0502", 1}, {"@03410001030e0502", 1}, {"@0342000101280502", 1}, {"@0343000102ef0502", 1}, {"@0344000100c50502", 1}, {"@03450001005f0502", 1}, {"@0347000103020502", 1}, {"@03480001006b0502", 1}, {"@03490001018d0502", 1}, {"@034a000101430502", 1}, {"@034b0001009f0502", 1}, {"@0356000101350502", 1}, {"@0357000100eb0502", 1}, {"@0358000102fa0502", 1}, {"@035a000100850502", 1}, {"@035c000101290502", 1}, {"@035d000100c90502", 1}, {"@035e0001018e0502", 1}, {"@0369000100d30502", 1}, {"@036a0001019d0502", 1}, {"@036b0001018b0502", 1}, {"@036d000103040502", 1}, {"@036e000102fb0502", 1}, {"@03700001015d0502", 1}, {"@03710001005c0502", 1}, {"@03720001010b0502", 1}, {"@0373000101340502", 1}, {"@0374010103190502", 1}, {"@037e000101560502", 1}, {"@037f000101aa0502", 1}, {"@0380000101870502", 1}, {"@0381000100d50502", 1}, {"@03820001016b0502", 1}, {"@03830001009b0502", 1}, {"@0384000100860502", 1}, {"@0385000101060502", 1}, {"@0390000101850502", 1}, {"@0392000101270502", 1}, {"@0393000100a00502", 1}, {"@0394000100890502", 1}, {"@0395000102fc0502", 1}, {"@0398000100bf0502", 1}, {"@0399000101c20502", 1}, {"@03a40001014f0502", 1}, {"@03a50001015b0502", 1}, {"@03a6000100c80502", 1}, {"@03a7000101a10502", 1}, {"@03a8000100910502", 1}, {"@03a9000100710502", 1}, {"@03aa000100e60502", 1}, {"@03ab000103160502", 1}, {"@03ac000101880502", 1}, {"@03ad000101b20502", 1}, {"@03ae000100870502", 1}, {"@03af0001012c0502", 1}, {"@03b0000101a90502", 1}, {"@03b1000100f00502", 1}, {"@03bc0001008a0502", 1}, {"@03bd000100f90502", 1}, {"@03be000101980502", 1}, {"@03bf000101bc0502", 1}, {"@03c0000103100502", 1}, {"@03c1000100bb0502", 1}, {"@03c40001012b0502", 1}, {"@03c50001015c0502", 1}, {"@03c6000100930502", 1}, {"@03d1000100c20502", 1}, {"@03d2000100e50502", 1}, {"@03d3000102f30502", 1}, {"@03d6000101570502", 1}, {"@03d7000101b40502", 1}, {"@03d9000101a50502", 1}, {"@03da000101510502", 1}, {"@03db0001006d0502", 1}, {"@03e6000100ec0502", 1}, {"@03e70001012a0502", 1}, {"@03e8000102f50502", 1}, {"@03ea0001030b0502", 1}, {"@03ec000101830502", 1}, {"@03ed000101a30502", 1}, {"@03ee0001008b0502", 1}, {"@03fa000100d00502", 1}, {"@03fb000101cf0502", 1}, {"@03fc000101470502", 1}, {"@03fd000101580502", 1}, {"@03fe000101a40502", 1}, {"@03ff000100f40502", 1}, {"@04000001006f0502", 1}, {"@0401000100660502", 1}, {"@040c000101590502", 1}, {"@040d000100780502", 1}, {"@040e000100880502", 1}, {"@040f000101500502", 1}, {"@04100001007f0502", 1}, {"@0411000101ab0502", 1}, {"@04140001030a0502", 1}, {"@0415000101bb0502", 1}, {"@0416000100fb0502", 1}, {"@0418000100d80502", 1}, {"@041a000100e00502", 1}, {"@041b000100f10502", 1}, {"@041c000101410502", 1}, {"@041d0001018a0502", 1}, {"@041e0001015f0502", 1}, {"@0429000100700502", 1}, {"@042a0001012d0502", 1}, {"@042b000101af0502", 1}, {"@0436000101940502", 1}, {"@0437000101050502", 1}, {"@0438000103000502", 1}, {"@0439000103110502", 1}, {"@043b000103030502", 1}, {"@043c000101cb0502", 1}, {"@043d0001007c0502", 1}, {"@043e000101490502", 1}, {"@043f000101550502", 1}, {"@0440000100ca0502", 1}, {"@044b0001016c0502", 1}, {"@044c0001008e0502", 1}, {"@044d000101930502", 1}, {"@044e000103150502", 1}, {"@0450000100cf0502", 1}, {"@04510001015e0502", 1}, {"@0452000100730502", 1}, {"@0453000101040502", 1}, {"@0454000101ae0502", 1}, {"@045f000101a80502", 1}, {"@0460000100a50502", 1}, {"@0461000101610502", 1}, {"@0462000100f60502", 1}, {"@0463000101310502", 1}, {"@0464000100c00502", 1}, {"@04650001006e0502", 1}, {"@0468000102f20502", 1}, {"@0469000101640502", 1}, {"@046a000101d00502", 1}, {"@046b000101970502", 1}, {"@046c0001008c0502", 1}, {"@046d000100f30502", 1}, {"@0478000101630502", 1}, {"@0479000100920502", 1}, {"@047a000100600502", 1}, {"@047b000100f50502", 1}, {"@047c000101a00502", 1}, {"@047d0001012e0502", 1}, {"@04800001008d0502", 1}, {"@0481000102f10502", 1}, {"@0482000102fd0502", 1}, {"@0483000101b00502", 1}, {"@04850001014c0502", 1}, {"@0486000100fc0502", 1}, {"@0487000101bf0502", 1}, {"@0488000100980502", 1}, {"@0489000100ef0502", 1}, {"@04940001009a0502", 1}, {"@0495000101920502", 1}, {"@0496000100d90502", 1}, {"@04970001007a0502", 1}, {"@04980001014a0502", 1}, {"@0499000100df0502", 1}, {"@049a0001014e0502", 1}, {"@049b000100610502", 1}, {"@049c000101400502", 1}, {"@049d000100ed0502", 1}, {"@049e000101b70502", 1}, {"@049f000103010502", 1}, {"@04a00001016e0502", 1}, {"@04a10001016f0502", 1}, {"@04a2000102e80502", 1}, {"@04a3000101c90502", 1}, {"@04a4000100d40502", 1}, {"@04a5000100740502", 1}, {"@04a6000100a30502", 1}, {"@04a7000101a60502", 1}, {"@04a80101031e0502", 1}, {"@04b2000101b90502", 1}, {"@04b3000100dd0502", 1}, {"@04b40001030c0502", 1}, {"@04b6000102ec0502", 1}, {"@04b9000101600502", 1}, {"@04ba0001005d0502", 1}, {"@04c5000101010502", 1}, {"@04c6000101670502", 1}, {"@04c7000100940502", 1}, {"@04c8000102ed0502", 1}, {"@04c90001030d0502", 1}, {"@04cc000100a40502", 1}, {"@04cd000101520502", 1}, {"@04ce000100db0502", 1}, {"@04cf000100e10502", 1}, {"@04d0000101960502", 1}, {"@04d10001009e0502", 1}, {"@04d2000101a70502", 1}, {"@04d30101031b0502", 1}, {"@04dd000100a20502", 1}, {"@04de000100ce0502", 1}, {"@04df000100e80502", 1}, {"@04e0000100f70502", 1}, {"@04e1000101be0502", 1}, {"@04e2000101090502", 1}, {"@04e3000101650502", 1}, {"@04e4000101b60502", 1}, {"@04e5000101ad0502", 1}, {"@04e6000100820502", 1}, {"@04e7000101320502", 1}, {"@04e8000101ce0502", 1}, {"@04ea000103180502", 1}, {"@04eb000102f00502", 1}, {"@04ec000100770502", 1}, {"@04ed000100620502", 1}, {"@04ee0001014b0502", 1}, {"@04ef0001013b0502", 1}, {"@04fa000101680502", 1}, {"@04fb000101c60502", 1}, {"@04fc000102ee0502", 1}, {"@04fd0001007b0502", 1}, {"@04fe000100590502", 1}, {"@04ff000101620502", 1}, {"@0500000100e70502", 1}, {"@050b000100990502", 1}, {"@050c000101c10502", 1}, {"@050d000101420502", 1}, {"@050e000100d70502", 1}, {"@050f000103140502", 1}, {"@0510000101070502", 1}, {"@0511000101950502", 1}, {"@0513000102e70502", 1}, {"@0514000101530502", 1}, {"@05150001005b0502", 1}, {"@0580000000050002", 1}, {"@05810000001c0002", 1}, {"@05c0000000060002", 1}, {"@05c0000003651302", 1}, {"@05c0000004121302", 1}, {"@05c00000043a1302", 1}, {"@05c00000043b1302", 1}, {"@05c00100001d0002", 1}, {"@0600000000120002", 1}, {"@06400100001e0002", 1}, {"@06c00000000f0002", 1}, {"@0700000000070002", 1}, {"@0740000000100002", 1}, {"@0741000000200002", 1}, {"@07420000001f0002", 1}, {"@07800000002d0002", 1}, {"@07810000002e0002", 1}, {"@0781000000330002", 1}, {"@07820000002f0002", 1}, {"@07c0000000210002", 1}, {"@07c0010000220002", 1}, {"@07c0020000230002", 1}, {"@08000100003e0402", 1}, {"@08000100025f0402", 1}, {"@0800010003690402", 1}, {"@0800010003820002", 1}, {"@0800010004150402", 1}, {"@08000200003f0402", 1}, {"@0800020002600402", 1}, {"@08000200036a0402", 1}, {"@0800030000400402", 1}, {"@0800030002610402", 1}, {"@08000300036b0402", 1}, {"@0a12000103c90502", 1}, {"@0a1c000103d30502", 1}, {"@1906000000240002", 1}, {"@1919000000090002", 1}, {"@1927000000260002", 1}, {"@19960000023d0002", 1}, {"@1ac0000000110002", 1}, {"@1b92000000250002", 1}, {"@1f000000000a0002", 1}, {"@1f00000002540c02", 1}, {"@1f01000000270002", 1}, {"@1f01000002550c02", 1}, {"@1f02000000280002", 1}, {"@1f02000002560c02", 1}, {"@1f03000002570c02", 1}, {"@21000000000b0002", 1}, {"@2101000000180002", 1}, {"@2102000000290002", 1}, {"@21030000002a0002", 1}, {"@2104000002520002", 1}, {"@22400000002b0002", 1}, {"@22800000002c0002", 1}, {"@2281000002510002", 1}, {"@22c00000003a0202", 1} } },
+	{"0004000000189600", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0003000000020002", 1}, {"@0003000000370102", 1}, {"@0003000404421c02", 1}, {"@0003010200410302", 1}, {"@0003010200420302", 1}, {"@0003010200430302", 1}, {"@00030102023e0302", 1}, {"@0004000002620102", 1}, {"@0004010000130002", 1}, {"@0004010004ea0102", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@0006000000150002", 1}, {"@00070000001a0002", 1}, {"@0007000002630102", 1}, {"@0008000000030002", 1}, {"@0008000002640102", 1}, {"@00080100042f1a02", 1}, {"@0008ff00023b0702", 1}, {"@00090000000d0002", 1}, {"@0009000002650102", 1}, {"@000a000000380102", 1}, {"@000a010004c20102", 1}, {"@0100000000040002", 1}, {"@01000000034b0902", 1}, {"@01000000034c0902", 1}, {"@01000000034d0902", 1}, {"@01000000034e0902", 1}, {"@01000000034f0902", 1}, {"@0100000003530902", 1}, {"@0100000003540902", 1}, {"@01000000037c0002", 1}, {"@0100000003990902", 1}, {"@0100000004180902", 1}, {"@0100010000160002", 1}, {"@0100010003500902", 1}, {"@01010000000e0002", 1}, {"@0101000003520902", 1}, {"@0101000003560902", 1}, {"@0101000004190902", 1}, {"@0101010000170002", 1}, {"@0101030004140902", 1}, {"@01020100001b0002", 1}, {"@01020100041a0902", 1}, {"@0180000000080002", 1}, {"@01810000024b0502", 1}, {"@0181000100440502", 1}, {"@0181000101d40502", 1}, {"@01810100023f0502", 1}, {"@0181010100b40502", 1}, {"@01810201011a0502", 1}, {"@0181030101700502", 1}, {"@0181040103aa0502", 1}, {"@0181050103bf0502", 1}, {"@0182000002400502", 1}, {"@0182000100a80502", 1}, {"@0182000101d80502", 1}, {"@0182000103b20502", 1}, {"@0182010100460502", 1}, {"@0183000002420502", 1}, {"@0183000100450502", 1}, {"@01830101010e0502", 1}, {"@0183020103a80502", 1}, {"@0183030103be0502", 1}, {"@01840000024d0502", 1}, {"@0184050103a90502", 1}, {"@01850001004b0502", 1}, {"@0185020101170502", 1}, {"@0185040101790502", 1}, {"@0186010100af0502", 1}, {"@0186030101750502", 1}, {"@0187000100470502", 1}, {"@0187000103b00502", 1}, {"@0188000002410502", 1}, {"@0188000101120502", 1}, {"@0188000103af0502", 1}, {"@0189000100ab0502", 1}, {"@0189010103b10502", 1}, {"@018a000002450502", 1}, {"@018a000100a90502", 1}, {"@018b000002460502", 1}, {"@018b000101150502", 1}, {"@018c000002430502", 1}, {"@018c0001004c0502", 1}, {"@018c010101180502", 1}, {"@018d0000024c0502", 1}, {"@018d0001010c0502", 1}, {"@018e000002490502", 1}, {"@018e000100490502", 1}, {"@018e010101780502", 1}, {"@018f000100b30502", 1}, {"@018f010101190502", 1}, {"@0190000101710502", 1}, {"@01910001004e0502", 1}, {"@0192000002470502", 1}, {"@01920001010d0502", 1}, {"@0192000103ad0502", 1}, {"@0193000002480502", 1}, {"@0193000101740502", 1}, {"@0193000103ae0502", 1}, {"@01940000024a0502", 1}, {"@0194000100aa0502", 1}, {"@0194000103b60502", 1}, {"@0195000100b00502", 1}, {"@01960000024e0502", 1}, {"@0196000100480502", 1}, {"@0197000101770502", 1}, {"@0198000100b10502", 1}, {"@0199000101160502", 1}, {"@019a000100b70502", 1}, {"@019b000100b60502", 1}, {"@019c000101730502", 1}, {"@019d000100ac0502", 1}, {"@019e000100ad0502", 1}, {"@019f000101110502", 1}, {"@01a00001010f0502", 1}, {"@01a1000101100502", 1}, {"@01a20001017d0502", 1}, {"@01a2000103b90502", 1}, {"@01a30001004a0502", 1}, {"@01a40001004d0502", 1}, {"@01a5000101720502", 1}, {"@01a6000100500502", 1}, {"@01a6000103b70502", 1}, {"@01a7000101140502", 1}, {"@01a80001004f0502", 1}, {"@01a80101017e0502", 1}, {"@01a9000101760502", 1}, {"@01aa000100530502", 1}, {"@01ab0001017c0502", 1}, {"@01ac0001017f0502", 1}, {"@01ad000100b80502", 1}, {"@01ae0001011b0502", 1}, {"@01af0001011c0502", 1}, {"@01b0000100520502", 1}, {"@01b1000100b20502", 1}, {"@01b10101017b0502", 1}, {"@01b3000100b50502", 1}, {"@01b4000101130502", 1}, {"@01b5000100510502", 1}, {"@01b6000100ae0502", 1}, {"@01c1000002440502", 1}, {"@01c1000100540502", 1}, {"@01c10101017a0502", 1}, {"@01c1020103bb0502", 1}, {"@0200000100a10502", 1}, {"@02010001016a0502", 1}, {"@0202000101030502", 1}, {"@02030001019a0502", 1}, {"@0206000103120502", 1}, {"@0208000100960502", 1}, {"@02090001019f0502", 1}, {"@0214000100e40502", 1}, {"@0215000101820502", 1}, {"@0216000100570502", 1}, {"@0217000101b30502", 1}, {"@02190001007e0502", 1}, {"@021a000100da0502", 1}, {"@021b000100800502", 1}, {"@021c000102f70502", 1}, {"@021d000101cd0502", 1}, {"@021e000101230502", 1}, {"@021f000103170502", 1}, {"@0220000100fd0502", 1}, {"@02210001013c0502", 1}, {"@0222000101440502", 1}, {"@022d000100f20502", 1}, {"@022e000101d30502", 1}, {"@022f0001011e0502", 1}, {"@0230000101d20502", 1}, {"@02310001006a0502", 1}, {"@0232000102ea0502", 1}, {"@0233000103060502", 1}, {"@0235000100840502", 1}, {"@0238000102f80502", 1}, {"@023c000100bd0502", 1}, {"@023d000101b50502", 1}, {"@023e000100d10502", 1}, {"@023f000101660502", 1}, {"@024a000101d10502", 1}, {"@024b000101260502", 1}, {"@024d000102f60502", 1}, {"@024f000100810502", 1}, {"@0251000100c10502", 1}, {"@0252000100fe0502", 1}, {"@025d000100550502", 1}, {"@025e000101250502", 1}, {"@025f000101c50502", 1}, {"@025f000101d70502", 1}, {"@0260000100d20502", 1}, {"@0261000100650502", 1}, {"@0262000101370502", 1}, {"@0263000100750502", 1}, {"@0264000101ac0502", 1}, {"@0265000101540502", 1}, {"@0266000100680502", 1}, {"@0267000101080502", 1}, {"@02680001007d0502", 1}, {"@02690001011f0502", 1}, {"@026a000101460502", 1}, {"@026b000100e90502", 1}, {"@026c000100c30502", 1}, {"@026d0001013f0502", 1}, {"@026e000100ba0502", 1}, {"@026f000101900502", 1}, {"@0270000100ff0502", 1}, {"@02710001019b0502", 1}, {"@0272000101860502", 1}, {"@027d000100630502", 1}, {"@027e000101690502", 1}, {"@027f000100b90502", 1}, {"@0280000100830502", 1}, {"@0281000101200502", 1}, {"@0282000101810502", 1}, {"@0282000101d60502", 1}, {"@0283000100c70502", 1}, {"@0284000102fe0502", 1}, {"@0286000103130502", 1}, {"@02870001005a0502", 1}, {"@028a000102e90502", 1}, {"@028b000100e30502", 1}, {"@028c0001013e0502", 1}, {"@028d000101bd0502", 1}, {"@028e0001019e0502", 1}, {"@028f0101031a0502", 1}, {"@0299000100950502", 1}, {"@029a000100ee0502", 1}, {"@029b000100cb0502", 1}, {"@029e0001013d0502", 1}, {"@02a2000101ba0502", 1}, {"@02a3000102ff0502", 1}, {"@02a4000100720502", 1}, {"@02a50001018c0502", 1}, {"@02a6000101240502", 1}, {"@02b1000100690502", 1}, {"@02b2000100c40502", 1}, {"@02b70001030f0502", 1}, {"@02b80001019c0502", 1}, {"@02c3000100dc0502", 1}, {"@02c4000100670502", 1}, {"@02c5000103080502", 1}, {"@02c7000101220502", 1}, {"@02c9000100cd0502", 1}, {"@02ca000101ca0502", 1}, {"@02cb000101360502", 1}, {"@02d6000100560502", 1}, {"@02d7000101300502", 1}, {"@02d8000100e20502", 1}, {"@02d9000101c80502", 1}, {"@02da000101330502", 1}, {"@02db0001005e0502", 1}, {"@02dc000100be0502", 1}, {"@02dd000100ea0502", 1}, {"@02de0001009c0502", 1}, {"@02df000101910502", 1}, {"@02e00101031d0502", 1}, {"@02ea000101800502", 1}, {"@02ea000101d50502", 1}, {"@02eb000100de0502", 1}, {"@02ec000101c40502", 1}, {"@02ed0001015a0502", 1}, {"@02ee000101990502", 1}, {"@02ef000100580502", 1}, {"@02f0000100a70502", 1}, {"@02f1000101450502", 1}, {"@02f2000100cc0502", 1}, {"@02f3000102f90502", 1}, {"@02f4000103050502", 1}, {"@02f8000101380502", 1}, {"@02f9000101020502", 1}, {"@02fa000100970502", 1}, {"@02fb000100900502", 1}, {"@02fc0001018f0502", 1}, {"@0307000100640502", 1}, {"@03080001014d0502", 1}, {"@0309000100c60502", 1}, {"@030a000101c70502", 1}, {"@030b000100790502", 1}, {"@030c000101b80502", 1}, {"@030d000101840502", 1}, {"@030e0001012f0502", 1}, {"@030f0001016d0502", 1}, {"@0310000100f80502", 1}, {"@0311000100d60502", 1}, {"@0312000103090502", 1}, {"@0313000101210502", 1}, {"@0314000102f40502", 1}, {"@0316000101c00502", 1}, {"@0317000100a60502", 1}, {"@03180001006c0502", 1}, {"@0323000100760502", 1}, {"@0324000101890502", 1}, {"@03250001010a0502", 1}, {"@0326000101390502", 1}, {"@0327000101c30502", 1}, {"@0328000102eb0502", 1}, {"@03290001009d0502", 1}, {"@032a000103070502", 1}, {"@032c000101480502", 1}, {"@032d000100bc0502", 1}, {"@032e0101031c0502", 1}, {"@03380001011d0502", 1}, {"@0339000101b10502", 1}, {"@033a000101cc0502", 1}, {"@033b000100fa0502", 1}, {"@033c000101000502", 1}, {"@033d0001013a0502", 1}, {"@033e000101a20502", 1}, {"@033f0001008f0502", 1}, {"@03410001030e0502", 1}, {"@0342000101280502", 1}, {"@0343000102ef0502", 1}, {"@0344000100c50502", 1}, {"@03450001005f0502", 1}, {"@0347000103020502", 1}, {"@03480001006b0502", 1}, {"@03490001018d0502", 1}, {"@034a000101430502", 1}, {"@034b0001009f0502", 1}, {"@0356000101350502", 1}, {"@0357000100eb0502", 1}, {"@0358000102fa0502", 1}, {"@035a000100850502", 1}, {"@035c000101290502", 1}, {"@035d000100c90502", 1}, {"@035e0001018e0502", 1}, {"@0369000100d30502", 1}, {"@036a0001019d0502", 1}, {"@036b0001018b0502", 1}, {"@036d000103040502", 1}, {"@036e000102fb0502", 1}, {"@03700001015d0502", 1}, {"@03710001005c0502", 1}, {"@03720001010b0502", 1}, {"@0373000101340502", 1}, {"@0374010103190502", 1}, {"@037e000101560502", 1}, {"@037f000101aa0502", 1}, {"@0380000101870502", 1}, {"@0381000100d50502", 1}, {"@03820001016b0502", 1}, {"@03830001009b0502", 1}, {"@0384000100860502", 1}, {"@0385000101060502", 1}, {"@0390000101850502", 1}, {"@0392000101270502", 1}, {"@0393000100a00502", 1}, {"@0394000100890502", 1}, {"@0395000102fc0502", 1}, {"@0398000100bf0502", 1}, {"@0399000101c20502", 1}, {"@03a40001014f0502", 1}, {"@03a50001015b0502", 1}, {"@03a6000100c80502", 1}, {"@03a7000101a10502", 1}, {"@03a8000100910502", 1}, {"@03a9000100710502", 1}, {"@03aa000100e60502", 1}, {"@03ab000103160502", 1}, {"@03ac000101880502", 1}, {"@03ad000101b20502", 1}, {"@03ae000100870502", 1}, {"@03af0001012c0502", 1}, {"@03b0000101a90502", 1}, {"@03b1000100f00502", 1}, {"@03bc0001008a0502", 1}, {"@03bd000100f90502", 1}, {"@03be000101980502", 1}, {"@03bf000101bc0502", 1}, {"@03c0000103100502", 1}, {"@03c1000100bb0502", 1}, {"@03c40001012b0502", 1}, {"@03c50001015c0502", 1}, {"@03c6000100930502", 1}, {"@03d1000100c20502", 1}, {"@03d2000100e50502", 1}, {"@03d3000102f30502", 1}, {"@03d6000101570502", 1}, {"@03d7000101b40502", 1}, {"@03d9000101a50502", 1}, {"@03da000101510502", 1}, {"@03db0001006d0502", 1}, {"@03e6000100ec0502", 1}, {"@03e70001012a0502", 1}, {"@03e8000102f50502", 1}, {"@03ea0001030b0502", 1}, {"@03ec000101830502", 1}, {"@03ed000101a30502", 1}, {"@03ee0001008b0502", 1}, {"@03fa000100d00502", 1}, {"@03fb000101cf0502", 1}, {"@03fc000101470502", 1}, {"@03fd000101580502", 1}, {"@03fe000101a40502", 1}, {"@03ff000100f40502", 1}, {"@04000001006f0502", 1}, {"@0401000100660502", 1}, {"@040c000101590502", 1}, {"@040d000100780502", 1}, {"@040e000100880502", 1}, {"@040f000101500502", 1}, {"@04100001007f0502", 1}, {"@0411000101ab0502", 1}, {"@04140001030a0502", 1}, {"@0415000101bb0502", 1}, {"@0416000100fb0502", 1}, {"@0418000100d80502", 1}, {"@041a000100e00502", 1}, {"@041b000100f10502", 1}, {"@041c000101410502", 1}, {"@041d0001018a0502", 1}, {"@041e0001015f0502", 1}, {"@0429000100700502", 1}, {"@042a0001012d0502", 1}, {"@042b000101af0502", 1}, {"@0436000101940502", 1}, {"@0437000101050502", 1}, {"@0438000103000502", 1}, {"@0439000103110502", 1}, {"@043b000103030502", 1}, {"@043c000101cb0502", 1}, {"@043d0001007c0502", 1}, {"@043e000101490502", 1}, {"@043f000101550502", 1}, {"@0440000100ca0502", 1}, {"@044b0001016c0502", 1}, {"@044c0001008e0502", 1}, {"@044d000101930502", 1}, {"@044e000103150502", 1}, {"@0450000100cf0502", 1}, {"@04510001015e0502", 1}, {"@0452000100730502", 1}, {"@0453000101040502", 1}, {"@0454000101ae0502", 1}, {"@045f000101a80502", 1}, {"@0460000100a50502", 1}, {"@0461000101610502", 1}, {"@0462000100f60502", 1}, {"@0463000101310502", 1}, {"@0464000100c00502", 1}, {"@04650001006e0502", 1}, {"@0468000102f20502", 1}, {"@0469000101640502", 1}, {"@046a000101d00502", 1}, {"@046b000101970502", 1}, {"@046c0001008c0502", 1}, {"@046d000100f30502", 1}, {"@0478000101630502", 1}, {"@0479000100920502", 1}, {"@047a000100600502", 1}, {"@047b000100f50502", 1}, {"@047c000101a00502", 1}, {"@047d0001012e0502", 1}, {"@04800001008d0502", 1}, {"@0481000102f10502", 1}, {"@0482000102fd0502", 1}, {"@0483000101b00502", 1}, {"@04850001014c0502", 1}, {"@0486000100fc0502", 1}, {"@0487000101bf0502", 1}, {"@0488000100980502", 1}, {"@0489000100ef0502", 1}, {"@04940001009a0502", 1}, {"@0495000101920502", 1}, {"@0496000100d90502", 1}, {"@04970001007a0502", 1}, {"@04980001014a0502", 1}, {"@0499000100df0502", 1}, {"@049a0001014e0502", 1}, {"@049b000100610502", 1}, {"@049c000101400502", 1}, {"@049d000100ed0502", 1}, {"@049e000101b70502", 1}, {"@049f000103010502", 1}, {"@04a00001016e0502", 1}, {"@04a10001016f0502", 1}, {"@04a2000102e80502", 1}, {"@04a3000101c90502", 1}, {"@04a4000100d40502", 1}, {"@04a5000100740502", 1}, {"@04a6000100a30502", 1}, {"@04a7000101a60502", 1}, {"@04a80101031e0502", 1}, {"@04b2000101b90502", 1}, {"@04b3000100dd0502", 1}, {"@04b40001030c0502", 1}, {"@04b6000102ec0502", 1}, {"@04b9000101600502", 1}, {"@04ba0001005d0502", 1}, {"@04c5000101010502", 1}, {"@04c6000101670502", 1}, {"@04c7000100940502", 1}, {"@04c8000102ed0502", 1}, {"@04c90001030d0502", 1}, {"@04cc000100a40502", 1}, {"@04cd000101520502", 1}, {"@04ce000100db0502", 1}, {"@04cf000100e10502", 1}, {"@04d0000101960502", 1}, {"@04d10001009e0502", 1}, {"@04d2000101a70502", 1}, {"@04d30101031b0502", 1}, {"@04dd000100a20502", 1}, {"@04de000100ce0502", 1}, {"@04df000100e80502", 1}, {"@04e0000100f70502", 1}, {"@04e1000101be0502", 1}, {"@04e2000101090502", 1}, {"@04e3000101650502", 1}, {"@04e4000101b60502", 1}, {"@04e5000101ad0502", 1}, {"@04e6000100820502", 1}, {"@04e7000101320502", 1}, {"@04e8000101ce0502", 1}, {"@04ea000103180502", 1}, {"@04eb000102f00502", 1}, {"@04ec000100770502", 1}, {"@04ed000100620502", 1}, {"@04ee0001014b0502", 1}, {"@04ef0001013b0502", 1}, {"@04fa000101680502", 1}, {"@04fb000101c60502", 1}, {"@04fc000102ee0502", 1}, {"@04fd0001007b0502", 1}, {"@04fe000100590502", 1}, {"@04ff000101620502", 1}, {"@0500000100e70502", 1}, {"@050b000100990502", 1}, {"@050c000101c10502", 1}, {"@050d000101420502", 1}, {"@050e000100d70502", 1}, {"@050f000103140502", 1}, {"@0510000101070502", 1}, {"@0511000101950502", 1}, {"@0513000102e70502", 1}, {"@0514000101530502", 1}, {"@05150001005b0502", 1}, {"@0580000000050002", 1}, {"@05810000001c0002", 1}, {"@05c0000000060002", 1}, {"@05c0000003651302", 1}, {"@05c0000004121302", 1}, {"@05c00000043a1302", 1}, {"@05c00000043b1302", 1}, {"@05c00100001d0002", 1}, {"@0600000000120002", 1}, {"@06400100001e0002", 1}, {"@06c00000000f0002", 1}, {"@0700000000070002", 1}, {"@0740000000100002", 1}, {"@0741000000200002", 1}, {"@07420000001f0002", 1}, {"@07800000002d0002", 1}, {"@07810000002e0002", 1}, {"@0781000000330002", 1}, {"@07820000002f0002", 1}, {"@07c0000000210002", 1}, {"@07c0010000220002", 1}, {"@07c0020000230002", 1}, {"@08000100003e0402", 1}, {"@08000100025f0402", 1}, {"@0800010003690402", 1}, {"@0800010003820002", 1}, {"@0800010004150402", 1}, {"@08000200003f0402", 1}, {"@0800020002600402", 1}, {"@08000200036a0402", 1}, {"@0800030000400402", 1}, {"@0800030002610402", 1}, {"@08000300036b0402", 1}, {"@0a12000103c90502", 1}, {"@0a1c000103d30502", 1}, {"@1906000000240002", 1}, {"@1919000000090002", 1}, {"@1927000000260002", 1}, {"@19960000023d0002", 1}, {"@1ac0000000110002", 1}, {"@1b92000000250002", 1}, {"@1f000000000a0002", 1}, {"@1f00000002540c02", 1}, {"@1f01000000270002", 1}, {"@1f01000002550c02", 1}, {"@1f02000000280002", 1}, {"@1f02000002560c02", 1}, {"@1f03000002570c02", 1}, {"@21000000000b0002", 1}, {"@2101000000180002", 1}, {"@2102000000290002", 1}, {"@21030000002a0002", 1}, {"@2104000002520002", 1}, {"@22400000002b0002", 1}, {"@22800000002c0002", 1}, {"@2281000002510002", 1}, {"@22c00000003a0202", 1} } },
+	{"0004000000189800", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0003000000020002", 1}, {"@0003000000370102", 1}, {"@0003000404421c02", 1}, {"@0003010200410302", 1}, {"@0003010200420302", 1}, {"@0003010200430302", 1}, {"@00030102023e0302", 1}, {"@0004000002620102", 1}, {"@0004010000130002", 1}, {"@0004010004ea0102", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@0006000000150002", 1}, {"@00070000001a0002", 1}, {"@0007000002630102", 1}, {"@0008000000030002", 1}, {"@0008000002640102", 1}, {"@00080100042f1a02", 1}, {"@0008ff00023b0702", 1}, {"@00090000000d0002", 1}, {"@0009000002650102", 1}, {"@000a000000380102", 1}, {"@000a010004c20102", 1}, {"@0100000000040002", 1}, {"@01000000034b0902", 1}, {"@01000000034c0902", 1}, {"@01000000034d0902", 1}, {"@01000000034e0902", 1}, {"@01000000034f0902", 1}, {"@0100000003530902", 1}, {"@0100000003540902", 1}, {"@01000000037c0002", 1}, {"@0100000003990902", 1}, {"@0100000004180902", 1}, {"@0100010000160002", 1}, {"@0100010003500902", 1}, {"@01010000000e0002", 1}, {"@0101000003520902", 1}, {"@0101000003560902", 1}, {"@0101000004190902", 1}, {"@0101010000170002", 1}, {"@0101030004140902", 1}, {"@01020100001b0002", 1}, {"@01020100041a0902", 1}, {"@0180000000080002", 1}, {"@01810000024b0502", 1}, {"@0181000100440502", 1}, {"@0181000101d40502", 1}, {"@01810100023f0502", 1}, {"@0181010100b40502", 1}, {"@01810201011a0502", 1}, {"@0181030101700502", 1}, {"@0181040103aa0502", 1}, {"@0181050103bf0502", 1}, {"@0182000002400502", 1}, {"@0182000100a80502", 1}, {"@0182000101d80502", 1}, {"@0182000103b20502", 1}, {"@0182010100460502", 1}, {"@0183000002420502", 1}, {"@0183000100450502", 1}, {"@01830101010e0502", 1}, {"@0183020103a80502", 1}, {"@0183030103be0502", 1}, {"@01840000024d0502", 1}, {"@0184050103a90502", 1}, {"@01850001004b0502", 1}, {"@0185020101170502", 1}, {"@0185040101790502", 1}, {"@0186010100af0502", 1}, {"@0186030101750502", 1}, {"@0187000100470502", 1}, {"@0187000103b00502", 1}, {"@0188000002410502", 1}, {"@0188000101120502", 1}, {"@0188000103af0502", 1}, {"@0189000100ab0502", 1}, {"@0189010103b10502", 1}, {"@018a000002450502", 1}, {"@018a000100a90502", 1}, {"@018b000002460502", 1}, {"@018b000101150502", 1}, {"@018c000002430502", 1}, {"@018c0001004c0502", 1}, {"@018c010101180502", 1}, {"@018d0000024c0502", 1}, {"@018d0001010c0502", 1}, {"@018e000002490502", 1}, {"@018e000100490502", 1}, {"@018e010101780502", 1}, {"@018f000100b30502", 1}, {"@018f010101190502", 1}, {"@0190000101710502", 1}, {"@01910001004e0502", 1}, {"@0192000002470502", 1}, {"@01920001010d0502", 1}, {"@0192000103ad0502", 1}, {"@0193000002480502", 1}, {"@0193000101740502", 1}, {"@0193000103ae0502", 1}, {"@01940000024a0502", 1}, {"@0194000100aa0502", 1}, {"@0194000103b60502", 1}, {"@0195000100b00502", 1}, {"@01960000024e0502", 1}, {"@0196000100480502", 1}, {"@0197000101770502", 1}, {"@0198000100b10502", 1}, {"@0199000101160502", 1}, {"@019a000100b70502", 1}, {"@019b000100b60502", 1}, {"@019c000101730502", 1}, {"@019d000100ac0502", 1}, {"@019e000100ad0502", 1}, {"@019f000101110502", 1}, {"@01a00001010f0502", 1}, {"@01a1000101100502", 1}, {"@01a20001017d0502", 1}, {"@01a2000103b90502", 1}, {"@01a30001004a0502", 1}, {"@01a40001004d0502", 1}, {"@01a5000101720502", 1}, {"@01a6000100500502", 1}, {"@01a6000103b70502", 1}, {"@01a7000101140502", 1}, {"@01a80001004f0502", 1}, {"@01a80101017e0502", 1}, {"@01a9000101760502", 1}, {"@01aa000100530502", 1}, {"@01ab0001017c0502", 1}, {"@01ac0001017f0502", 1}, {"@01ad000100b80502", 1}, {"@01ae0001011b0502", 1}, {"@01af0001011c0502", 1}, {"@01b0000100520502", 1}, {"@01b1000100b20502", 1}, {"@01b10101017b0502", 1}, {"@01b3000100b50502", 1}, {"@01b4000101130502", 1}, {"@01b5000100510502", 1}, {"@01b6000100ae0502", 1}, {"@01c1000002440502", 1}, {"@01c1000100540502", 1}, {"@01c10101017a0502", 1}, {"@01c1020103bb0502", 1}, {"@0200000100a10502", 1}, {"@02010001016a0502", 1}, {"@0202000101030502", 1}, {"@02030001019a0502", 1}, {"@0206000103120502", 1}, {"@0208000100960502", 1}, {"@02090001019f0502", 1}, {"@0214000100e40502", 1}, {"@0215000101820502", 1}, {"@0216000100570502", 1}, {"@0217000101b30502", 1}, {"@02190001007e0502", 1}, {"@021a000100da0502", 1}, {"@021b000100800502", 1}, {"@021c000102f70502", 1}, {"@021d000101cd0502", 1}, {"@021e000101230502", 1}, {"@021f000103170502", 1}, {"@0220000100fd0502", 1}, {"@02210001013c0502", 1}, {"@0222000101440502", 1}, {"@022d000100f20502", 1}, {"@022e000101d30502", 1}, {"@022f0001011e0502", 1}, {"@0230000101d20502", 1}, {"@02310001006a0502", 1}, {"@0232000102ea0502", 1}, {"@0233000103060502", 1}, {"@0235000100840502", 1}, {"@0238000102f80502", 1}, {"@023c000100bd0502", 1}, {"@023d000101b50502", 1}, {"@023e000100d10502", 1}, {"@023f000101660502", 1}, {"@024a000101d10502", 1}, {"@024b000101260502", 1}, {"@024d000102f60502", 1}, {"@024f000100810502", 1}, {"@0251000100c10502", 1}, {"@0252000100fe0502", 1}, {"@025d000100550502", 1}, {"@025e000101250502", 1}, {"@025f000101c50502", 1}, {"@025f000101d70502", 1}, {"@0260000100d20502", 1}, {"@0261000100650502", 1}, {"@0262000101370502", 1}, {"@0263000100750502", 1}, {"@0264000101ac0502", 1}, {"@0265000101540502", 1}, {"@0266000100680502", 1}, {"@0267000101080502", 1}, {"@02680001007d0502", 1}, {"@02690001011f0502", 1}, {"@026a000101460502", 1}, {"@026b000100e90502", 1}, {"@026c000100c30502", 1}, {"@026d0001013f0502", 1}, {"@026e000100ba0502", 1}, {"@026f000101900502", 1}, {"@0270000100ff0502", 1}, {"@02710001019b0502", 1}, {"@0272000101860502", 1}, {"@027d000100630502", 1}, {"@027e000101690502", 1}, {"@027f000100b90502", 1}, {"@0280000100830502", 1}, {"@0281000101200502", 1}, {"@0282000101810502", 1}, {"@0282000101d60502", 1}, {"@0283000100c70502", 1}, {"@0284000102fe0502", 1}, {"@0286000103130502", 1}, {"@02870001005a0502", 1}, {"@028a000102e90502", 1}, {"@028b000100e30502", 1}, {"@028c0001013e0502", 1}, {"@028d000101bd0502", 1}, {"@028e0001019e0502", 1}, {"@028f0101031a0502", 1}, {"@0299000100950502", 1}, {"@029a000100ee0502", 1}, {"@029b000100cb0502", 1}, {"@029e0001013d0502", 1}, {"@02a2000101ba0502", 1}, {"@02a3000102ff0502", 1}, {"@02a4000100720502", 1}, {"@02a50001018c0502", 1}, {"@02a6000101240502", 1}, {"@02b1000100690502", 1}, {"@02b2000100c40502", 1}, {"@02b70001030f0502", 1}, {"@02b80001019c0502", 1}, {"@02c3000100dc0502", 1}, {"@02c4000100670502", 1}, {"@02c5000103080502", 1}, {"@02c7000101220502", 1}, {"@02c9000100cd0502", 1}, {"@02ca000101ca0502", 1}, {"@02cb000101360502", 1}, {"@02d6000100560502", 1}, {"@02d7000101300502", 1}, {"@02d8000100e20502", 1}, {"@02d9000101c80502", 1}, {"@02da000101330502", 1}, {"@02db0001005e0502", 1}, {"@02dc000100be0502", 1}, {"@02dd000100ea0502", 1}, {"@02de0001009c0502", 1}, {"@02df000101910502", 1}, {"@02e00101031d0502", 1}, {"@02ea000101800502", 1}, {"@02ea000101d50502", 1}, {"@02eb000100de0502", 1}, {"@02ec000101c40502", 1}, {"@02ed0001015a0502", 1}, {"@02ee000101990502", 1}, {"@02ef000100580502", 1}, {"@02f0000100a70502", 1}, {"@02f1000101450502", 1}, {"@02f2000100cc0502", 1}, {"@02f3000102f90502", 1}, {"@02f4000103050502", 1}, {"@02f8000101380502", 1}, {"@02f9000101020502", 1}, {"@02fa000100970502", 1}, {"@02fb000100900502", 1}, {"@02fc0001018f0502", 1}, {"@0307000100640502", 1}, {"@03080001014d0502", 1}, {"@0309000100c60502", 1}, {"@030a000101c70502", 1}, {"@030b000100790502", 1}, {"@030c000101b80502", 1}, {"@030d000101840502", 1}, {"@030e0001012f0502", 1}, {"@030f0001016d0502", 1}, {"@0310000100f80502", 1}, {"@0311000100d60502", 1}, {"@0312000103090502", 1}, {"@0313000101210502", 1}, {"@0314000102f40502", 1}, {"@0316000101c00502", 1}, {"@0317000100a60502", 1}, {"@03180001006c0502", 1}, {"@0323000100760502", 1}, {"@0324000101890502", 1}, {"@03250001010a0502", 1}, {"@0326000101390502", 1}, {"@0327000101c30502", 1}, {"@0328000102eb0502", 1}, {"@03290001009d0502", 1}, {"@032a000103070502", 1}, {"@032c000101480502", 1}, {"@032d000100bc0502", 1}, {"@032e0101031c0502", 1}, {"@03380001011d0502", 1}, {"@0339000101b10502", 1}, {"@033a000101cc0502", 1}, {"@033b000100fa0502", 1}, {"@033c000101000502", 1}, {"@033d0001013a0502", 1}, {"@033e000101a20502", 1}, {"@033f0001008f0502", 1}, {"@03410001030e0502", 1}, {"@0342000101280502", 1}, {"@0343000102ef0502", 1}, {"@0344000100c50502", 1}, {"@03450001005f0502", 1}, {"@0347000103020502", 1}, {"@03480001006b0502", 1}, {"@03490001018d0502", 1}, {"@034a000101430502", 1}, {"@034b0001009f0502", 1}, {"@0356000101350502", 1}, {"@0357000100eb0502", 1}, {"@0358000102fa0502", 1}, {"@035a000100850502", 1}, {"@035c000101290502", 1}, {"@035d000100c90502", 1}, {"@035e0001018e0502", 1}, {"@0369000100d30502", 1}, {"@036a0001019d0502", 1}, {"@036b0001018b0502", 1}, {"@036d000103040502", 1}, {"@036e000102fb0502", 1}, {"@03700001015d0502", 1}, {"@03710001005c0502", 1}, {"@03720001010b0502", 1}, {"@0373000101340502", 1}, {"@0374010103190502", 1}, {"@037e000101560502", 1}, {"@037f000101aa0502", 1}, {"@0380000101870502", 1}, {"@0381000100d50502", 1}, {"@03820001016b0502", 1}, {"@03830001009b0502", 1}, {"@0384000100860502", 1}, {"@0385000101060502", 1}, {"@0390000101850502", 1}, {"@0392000101270502", 1}, {"@0393000100a00502", 1}, {"@0394000100890502", 1}, {"@0395000102fc0502", 1}, {"@0398000100bf0502", 1}, {"@0399000101c20502", 1}, {"@03a40001014f0502", 1}, {"@03a50001015b0502", 1}, {"@03a6000100c80502", 1}, {"@03a7000101a10502", 1}, {"@03a8000100910502", 1}, {"@03a9000100710502", 1}, {"@03aa000100e60502", 1}, {"@03ab000103160502", 1}, {"@03ac000101880502", 1}, {"@03ad000101b20502", 1}, {"@03ae000100870502", 1}, {"@03af0001012c0502", 1}, {"@03b0000101a90502", 1}, {"@03b1000100f00502", 1}, {"@03bc0001008a0502", 1}, {"@03bd000100f90502", 1}, {"@03be000101980502", 1}, {"@03bf000101bc0502", 1}, {"@03c0000103100502", 1}, {"@03c1000100bb0502", 1}, {"@03c40001012b0502", 1}, {"@03c50001015c0502", 1}, {"@03c6000100930502", 1}, {"@03d1000100c20502", 1}, {"@03d2000100e50502", 1}, {"@03d3000102f30502", 1}, {"@03d6000101570502", 1}, {"@03d7000101b40502", 1}, {"@03d9000101a50502", 1}, {"@03da000101510502", 1}, {"@03db0001006d0502", 1}, {"@03e6000100ec0502", 1}, {"@03e70001012a0502", 1}, {"@03e8000102f50502", 1}, {"@03ea0001030b0502", 1}, {"@03ec000101830502", 1}, {"@03ed000101a30502", 1}, {"@03ee0001008b0502", 1}, {"@03fa000100d00502", 1}, {"@03fb000101cf0502", 1}, {"@03fc000101470502", 1}, {"@03fd000101580502", 1}, {"@03fe000101a40502", 1}, {"@03ff000100f40502", 1}, {"@04000001006f0502", 1}, {"@0401000100660502", 1}, {"@040c000101590502", 1}, {"@040d000100780502", 1}, {"@040e000100880502", 1}, {"@040f000101500502", 1}, {"@04100001007f0502", 1}, {"@0411000101ab0502", 1}, {"@04140001030a0502", 1}, {"@0415000101bb0502", 1}, {"@0416000100fb0502", 1}, {"@0418000100d80502", 1}, {"@041a000100e00502", 1}, {"@041b000100f10502", 1}, {"@041c000101410502", 1}, {"@041d0001018a0502", 1}, {"@041e0001015f0502", 1}, {"@0429000100700502", 1}, {"@042a0001012d0502", 1}, {"@042b000101af0502", 1}, {"@0436000101940502", 1}, {"@0437000101050502", 1}, {"@0438000103000502", 1}, {"@0439000103110502", 1}, {"@043b000103030502", 1}, {"@043c000101cb0502", 1}, {"@043d0001007c0502", 1}, {"@043e000101490502", 1}, {"@043f000101550502", 1}, {"@0440000100ca0502", 1}, {"@044b0001016c0502", 1}, {"@044c0001008e0502", 1}, {"@044d000101930502", 1}, {"@044e000103150502", 1}, {"@0450000100cf0502", 1}, {"@04510001015e0502", 1}, {"@0452000100730502", 1}, {"@0453000101040502", 1}, {"@0454000101ae0502", 1}, {"@045f000101a80502", 1}, {"@0460000100a50502", 1}, {"@0461000101610502", 1}, {"@0462000100f60502", 1}, {"@0463000101310502", 1}, {"@0464000100c00502", 1}, {"@04650001006e0502", 1}, {"@0468000102f20502", 1}, {"@0469000101640502", 1}, {"@046a000101d00502", 1}, {"@046b000101970502", 1}, {"@046c0001008c0502", 1}, {"@046d000100f30502", 1}, {"@0478000101630502", 1}, {"@0479000100920502", 1}, {"@047a000100600502", 1}, {"@047b000100f50502", 1}, {"@047c000101a00502", 1}, {"@047d0001012e0502", 1}, {"@04800001008d0502", 1}, {"@0481000102f10502", 1}, {"@0482000102fd0502", 1}, {"@0483000101b00502", 1}, {"@04850001014c0502", 1}, {"@0486000100fc0502", 1}, {"@0487000101bf0502", 1}, {"@0488000100980502", 1}, {"@0489000100ef0502", 1}, {"@04940001009a0502", 1}, {"@0495000101920502", 1}, {"@0496000100d90502", 1}, {"@04970001007a0502", 1}, {"@04980001014a0502", 1}, {"@0499000100df0502", 1}, {"@049a0001014e0502", 1}, {"@049b000100610502", 1}, {"@049c000101400502", 1}, {"@049d000100ed0502", 1}, {"@049e000101b70502", 1}, {"@049f000103010502", 1}, {"@04a00001016e0502", 1}, {"@04a10001016f0502", 1}, {"@04a2000102e80502", 1}, {"@04a3000101c90502", 1}, {"@04a4000100d40502", 1}, {"@04a5000100740502", 1}, {"@04a6000100a30502", 1}, {"@04a7000101a60502", 1}, {"@04a80101031e0502", 1}, {"@04b2000101b90502", 1}, {"@04b3000100dd0502", 1}, {"@04b40001030c0502", 1}, {"@04b6000102ec0502", 1}, {"@04b9000101600502", 1}, {"@04ba0001005d0502", 1}, {"@04c5000101010502", 1}, {"@04c6000101670502", 1}, {"@04c7000100940502", 1}, {"@04c8000102ed0502", 1}, {"@04c90001030d0502", 1}, {"@04cc000100a40502", 1}, {"@04cd000101520502", 1}, {"@04ce000100db0502", 1}, {"@04cf000100e10502", 1}, {"@04d0000101960502", 1}, {"@04d10001009e0502", 1}, {"@04d2000101a70502", 1}, {"@04d30101031b0502", 1}, {"@04dd000100a20502", 1}, {"@04de000100ce0502", 1}, {"@04df000100e80502", 1}, {"@04e0000100f70502", 1}, {"@04e1000101be0502", 1}, {"@04e2000101090502", 1}, {"@04e3000101650502", 1}, {"@04e4000101b60502", 1}, {"@04e5000101ad0502", 1}, {"@04e6000100820502", 1}, {"@04e7000101320502", 1}, {"@04e8000101ce0502", 1}, {"@04ea000103180502", 1}, {"@04eb000102f00502", 1}, {"@04ec000100770502", 1}, {"@04ed000100620502", 1}, {"@04ee0001014b0502", 1}, {"@04ef0001013b0502", 1}, {"@04fa000101680502", 1}, {"@04fb000101c60502", 1}, {"@04fc000102ee0502", 1}, {"@04fd0001007b0502", 1}, {"@04fe000100590502", 1}, {"@04ff000101620502", 1}, {"@0500000100e70502", 1}, {"@050b000100990502", 1}, {"@050c000101c10502", 1}, {"@050d000101420502", 1}, {"@050e000100d70502", 1}, {"@050f000103140502", 1}, {"@0510000101070502", 1}, {"@0511000101950502", 1}, {"@0513000102e70502", 1}, {"@0514000101530502", 1}, {"@05150001005b0502", 1}, {"@0580000000050002", 1}, {"@05810000001c0002", 1}, {"@05c0000000060002", 1}, {"@05c0000003651302", 1}, {"@05c0000004121302", 1}, {"@05c00000043a1302", 1}, {"@05c00000043b1302", 1}, {"@05c00100001d0002", 1}, {"@0600000000120002", 1}, {"@06400100001e0002", 1}, {"@06c00000000f0002", 1}, {"@0700000000070002", 1}, {"@0740000000100002", 1}, {"@0741000000200002", 1}, {"@07420000001f0002", 1}, {"@07800000002d0002", 1}, {"@07810000002e0002", 1}, {"@0781000000330002", 1}, {"@07820000002f0002", 1}, {"@07c0000000210002", 1}, {"@07c0010000220002", 1}, {"@07c0020000230002", 1}, {"@08000100003e0402", 1}, {"@08000100025f0402", 1}, {"@0800010003690402", 1}, {"@0800010003820002", 1}, {"@0800010004150402", 1}, {"@08000200003f0402", 1}, {"@0800020002600402", 1}, {"@08000200036a0402", 1}, {"@0800030000400402", 1}, {"@0800030002610402", 1}, {"@08000300036b0402", 1}, {"@0a12000103c90502", 1}, {"@0a1c000103d30502", 1}, {"@1906000000240002", 1}, {"@1919000000090002", 1}, {"@1927000000260002", 1}, {"@19960000023d0002", 1}, {"@1ac0000000110002", 1}, {"@1b92000000250002", 1}, {"@1f000000000a0002", 1}, {"@1f00000002540c02", 1}, {"@1f01000000270002", 1}, {"@1f01000002550c02", 1}, {"@1f02000000280002", 1}, {"@1f02000002560c02", 1}, {"@1f03000002570c02", 1}, {"@21000000000b0002", 1}, {"@2101000000180002", 1}, {"@2102000000290002", 1}, {"@21030000002a0002", 1}, {"@2104000002520002", 1}, {"@22400000002b0002", 1}, {"@22800000002c0002", 1}, {"@2281000002510002", 1}, {"@22c00000003a0202", 1} } },
+	{"0004000000055F00", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@000a000000380102", 1}, {"@000a010004c20102", 1}, {"@0017000002680102", 1} } },
+	{"0004000000076500", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@000a000000380102", 1}, {"@000a010004c20102", 1}, {"@0017000002680102", 1} } },
+	{"00040000000D0000", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@000a000000380102", 1}, {"@000a010004c20102", 1}, {"@0017000002680102", 1} } },
+	{"00040000001D1900", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@000a000000380102", 1}, {"@000a010004c20102", 1}, {"@0017000002680102", 1} } },
+	{"00040000001D1A00", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@000a000000380102", 1}, {"@000a010004c20102", 1}, {"@0017000002680102", 1} } },
+	{"00040000001D1400", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@0006000000150002", 1}, {"@000a000000380102", 1}, {"@000a010004c20102", 1}, {"@0015000003670102", 1}, {"@0017000002680102", 1}, {"@0023000003680102", 1} } },
+	{"00040000001D1500", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@0006000000150002", 1}, {"@000a000000380102", 1}, {"@000a010004c20102", 1}, {"@0015000003670102", 1}, {"@0017000002680102", 1}, {"@0023000003680102", 1} } },
+	{"0004000000132700", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0003000000020002", 1}, {"@0003000000370102", 1}, {"@0003000404421c02", 1}, {"@0003010200410302", 1}, {"@0003010200420302", 1}, {"@0003010200430302", 1}, {"@00030102023e0302", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@000a000000380102", 1}, {"@000a010004c20102", 1} } },
+	{"0004000000132800", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0003000000020002", 1}, {"@0003000000370102", 1}, {"@0003000404421c02", 1}, {"@0003010200410302", 1}, {"@0003010200420302", 1}, {"@0003010200430302", 1}, {"@00030102023e0302", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@000a000000380102", 1}, {"@000a010004c20102", 1} } },
+	{"000400000018A100", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0003000000020002", 1}, {"@0003000000370102", 1}, {"@0003000404421c02", 1}, {"@0003010200410302", 1}, {"@0003010200420302", 1}, {"@0003010200430302", 1}, {"@00030102023e0302", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@000a000000380102", 1}, {"@000a010004c20102", 1} } },
+	{"00040000001B8F00", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0003000000020002", 1}, {"@0003000000370102", 1}, {"@0003000404421c02", 1}, {"@0003010200410302", 1}, {"@0003010200420302", 1}, {"@0003010200430302", 1}, {"@00030102023e0302", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@0006000000150002", 1}, {"@000a000000380102", 1}, {"@000a010004c20102", 1}, {"@0015000003670102", 1}, {"@0017000002680102", 1}, {"@0023000003680102", 1} } },
+	{"00040000001B9000", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0003000000020002", 1}, {"@0003000000370102", 1}, {"@0003000404421c02", 1}, {"@0003010200410302", 1}, {"@0003010200420302", 1}, {"@0003010200430302", 1}, {"@00030102023e0302", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@0006000000150002", 1}, {"@000a000000380102", 1}, {"@000a010004c20102", 1}, {"@0015000003670102", 1}, {"@0017000002680102", 1}, {"@0023000003680102", 1} } },
+	{"000400000017E200", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@3200000000300002", 1} } },
+	{"000400000017E300", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@3200000000300002", 1} } },
+	{"0004000000192400", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@3200000000300002", 1} } },
+	{"0004000000193900", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0003000000020002", 1}, {"@0003000000370102", 1}, {"@0003000404421c02", 1}, {"@0003010200410302", 1}, {"@0003010200420302", 1}, {"@0003010200430302", 1}, {"@00030102023e0302", 1}, {"@0004000002620102", 1}, {"@0004010000130002", 1}, {"@0004010004ea0102", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@0006000000150002", 1}, {"@00070000001a0002", 1}, {"@0007000002630102", 1}, {"@0008000000030002", 1}, {"@0008000002640102", 1}, {"@00080100042f1a02", 1}, {"@0008ff00023b0702", 1}, {"@00090000000d0002", 1}, {"@0009000002650102", 1}, {"@000a000000380102", 1}, {"@000a010004c20102", 1}, {"@0013000002660102", 1}, {"@00130000037a0002", 1}, {"@0014000002670102", 1}, {"@0017000002680102", 1} } },
+	{"000400000019BD00", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0003000000020002", 1}, {"@0003000000370102", 1}, {"@0003000404421c02", 1}, {"@0003010200410302", 1}, {"@0003010200420302", 1}, {"@0003010200430302", 1}, {"@00030102023e0302", 1}, {"@0004000002620102", 1}, {"@0004010000130002", 1}, {"@0004010004ea0102", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@0006000000150002", 1}, {"@00070000001a0002", 1}, {"@0007000002630102", 1}, {"@0008000000030002", 1}, {"@0008000002640102", 1}, {"@00080100042f1a02", 1}, {"@0008ff00023b0702", 1}, {"@00090000000d0002", 1}, {"@0009000002650102", 1}, {"@000a000000380102", 1}, {"@000a010004c20102", 1}, {"@0013000002660102", 1}, {"@00130000037a0002", 1}, {"@0014000002670102", 1}, {"@0017000002680102", 1} } },
+	{"000400000019BE00", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0003000000020002", 1}, {"@0003000000370102", 1}, {"@0003000404421c02", 1}, {"@0003010200410302", 1}, {"@0003010200420302", 1}, {"@0003010200430302", 1}, {"@00030102023e0302", 1}, {"@0004000002620102", 1}, {"@0004010000130002", 1}, {"@0004010004ea0102", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@0006000000150002", 1}, {"@00070000001a0002", 1}, {"@0007000002630102", 1}, {"@0008000000030002", 1}, {"@0008000002640102", 1}, {"@00080100042f1a02", 1}, {"@0008ff00023b0702", 1}, {"@00090000000d0002", 1}, {"@0009000002650102", 1}, {"@000a000000380102", 1}, {"@000a010004c20102", 1}, {"@0013000002660102", 1}, {"@00130000037a0002", 1}, {"@0014000002670102", 1}, {"@0017000002680102", 1} } },
+	{"00040000001C4D00", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0003000000020002", 1}, {"@0003000000370102", 1}, {"@0003000404421c02", 1}, {"@0003010200410302", 1}, {"@0003010200420302", 1}, {"@0003010200430302", 1}, {"@00030102023e0302", 1}, {"@0004000002620102", 1}, {"@0004010000130002", 1}, {"@0004010004ea0102", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@0006000000150002", 1}, {"@00070000001a0002", 1}, {"@0007000002630102", 1}, {"@0008000000030002", 1}, {"@0008000002640102", 1}, {"@00080100042f1a02", 1}, {"@0008ff00023b0702", 1}, {"@00090000000d0002", 1}, {"@0009000002650102", 1}, {"@000a000000380102", 1}, {"@000a010004c20102", 1}, {"@0013000002660102", 1}, {"@00130000037a0002", 1}, {"@0014000002670102", 1}, {"@0015000003670102", 1}, {"@0017000002680102", 1}, {"@0023000003680102", 1} } },
+	{"00040000001C4E00", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0003000000020002", 1}, {"@0003000000370102", 1}, {"@0003000404421c02", 1}, {"@0003010200410302", 1}, {"@0003010200420302", 1}, {"@0003010200430302", 1}, {"@00030102023e0302", 1}, {"@0004000002620102", 1}, {"@0004010000130002", 1}, {"@0004010004ea0102", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@0006000000150002", 1}, {"@00070000001a0002", 1}, {"@0007000002630102", 1}, {"@0008000000030002", 1}, {"@0008000002640102", 1}, {"@00080100042f1a02", 1}, {"@0008ff00023b0702", 1}, {"@00090000000d0002", 1}, {"@0009000002650102", 1}, {"@000a000000380102", 1}, {"@000a010004c20102", 1}, {"@0013000002660102", 1}, {"@00130000037a0002", 1}, {"@0014000002670102", 1}, {"@0015000003670102", 1}, {"@0017000002680102", 1}, {"@0023000003680102", 1} } },
+	{"0004000000175300", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0004000002620102", 1}, {"@0004010000130002", 1}, {"@0004010004ea0102", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@0006000000150002", 1}, {"@05c0000000060002", 1}, {"@05c0000003651302", 1}, {"@05c0000004121302", 1}, {"@05c00000043a1302", 1}, {"@05c00000043b1302", 1}, {"@05c00100001d0002", 1}, {"@05c1000003661302", 1} } },
+	{"000400000016CE00", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0004000002620102", 1}, {"@0004010000130002", 1}, {"@0004010004ea0102", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@0006000000150002", 1}, {"@05c0000000060002", 1}, {"@05c0000003651302", 1}, {"@05c0000004121302", 1}, {"@05c00000043a1302", 1}, {"@05c00000043b1302", 1}, {"@05c00100001d0002", 1}, {"@05c1000003661302", 1} } },
+	{"000400000016E300", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0004000002620102", 1}, {"@0004010000130002", 1}, {"@0004010004ea0102", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@0006000000150002", 1}, {"@05c0000000060002", 1}, {"@05c0000003651302", 1}, {"@05c0000004121302", 1}, {"@05c00000043a1302", 1}, {"@05c00000043b1302", 1}, {"@05c00100001d0002", 1}, {"@05c1000003661302", 1} } },
+	{"0004000000175200", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0004000002620102", 1}, {"@0004010000130002", 1}, {"@0004010004ea0102", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@0006000000150002", 1}, {"@05c0000000060002", 1}, {"@05c0000003651302", 1}, {"@05c0000004121302", 1}, {"@05c00000043a1302", 1}, {"@05c00000043b1302", 1}, {"@05c00100001d0002", 1}, {"@05c1000003661302", 1} } },
+	{"0004000000178800", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0003000000020002", 1}, {"@0003000000370102", 1}, {"@0003000404421c02", 1}, {"@0003010200410302", 1}, {"@0003010200420302", 1}, {"@0003010200430302", 1}, {"@00030102023e0302", 1}, {"@0004000002620102", 1}, {"@0004010000130002", 1}, {"@0004010004ea0102", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@0008000000030002", 1}, {"@0008000002640102", 1}, {"@00080100042f1a02", 1}, {"@0008ff00023b0702", 1}, {"@000a000000380102", 1}, {"@000a010004c20102", 1}, {"@0013000002660102", 1}, {"@00130000037a0002", 1}, {"@0100000000040002", 1}, {"@01000000034b0902", 1}, {"@01000000034c0902", 1}, {"@01000000034d0902", 1}, {"@01000000034e0902", 1}, {"@01000000034f0902", 1}, {"@0100000003530902", 1}, {"@0100000003540902", 1}, {"@01000000037c0002", 1}, {"@0100000003990902", 1}, {"@0100000004180902", 1}, {"@0100010000160002", 1}, {"@0100010003500902", 1}, {"@01010000000e0002", 1}, {"@0101000003520902", 1}, {"@0101000003560902", 1}, {"@0101000004190902", 1}, {"@0101010000170002", 1}, {"@0101030004140902", 1}, {"@01020100001b0002", 1}, {"@01020100041a0902", 1}, {"@01810000024b0502", 1}, {"@01810000037d0002", 1}, {"@01810100023f0502", 1}, {"@0182000002400502", 1}, {"@0183000002420502", 1}, {"@018e000002490502", 1}, {"@05c0000000060002", 1}, {"@05c0000003651302", 1}, {"@05c0000004121302", 1}, {"@05c00000043a1302", 1}, {"@05c00000043b1302", 1}, {"@05c00100001d0002", 1}, {"@08000100003e0402", 1}, {"@08000100025f0402", 1}, {"@0800010003690402", 1}, {"@0800010003820002", 1}, {"@0800010004150402", 1}, {"@08000200003f0402", 1}, {"@0800020002600402", 1}, {"@08000200036a0402", 1}, {"@0800030000400402", 1}, {"@0800030002610402", 1}, {"@08000300036b0402", 1}, {"@08010000025d0402", 1}, {"@0801000004360402", 1}, {"@08020000025e0402", 1}, {"@0802000004370402", 1}, {"@1f000000000a0002", 1}, {"@1f00000002540c02", 1}, {"@22800000002c0002", 1} } },
+	{"00040000001B4E00", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0003000000020002", 1}, {"@0003000000370102", 1}, {"@0003000404421c02", 1}, {"@0003010200410302", 1}, {"@0003010200420302", 1}, {"@0003010200430302", 1}, {"@00030102023e0302", 1}, {"@0004000002620102", 1}, {"@0004010000130002", 1}, {"@0004010004ea0102", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@0008000000030002", 1}, {"@0008000002640102", 1}, {"@00080100042f1a02", 1}, {"@0008ff00023b0702", 1}, {"@000a000000380102", 1}, {"@000a010004c20102", 1}, {"@0013000002660102", 1}, {"@00130000037a0002", 1}, {"@0100000000040002", 1}, {"@01000000034b0902", 1}, {"@01000000034c0902", 1}, {"@01000000034d0902", 1}, {"@01000000034e0902", 1}, {"@01000000034f0902", 1}, {"@0100000003530902", 1}, {"@0100000003540902", 1}, {"@01000000037c0002", 1}, {"@0100000003990902", 1}, {"@0100000004180902", 1}, {"@0100010000160002", 1}, {"@0100010003500902", 1}, {"@01010000000e0002", 1}, {"@0101000003520902", 1}, {"@0101000003560902", 1}, {"@0101000004190902", 1}, {"@0101010000170002", 1}, {"@0101030004140902", 1}, {"@01020100001b0002", 1}, {"@01020100041a0902", 1}, {"@01810000024b0502", 1}, {"@01810000037d0002", 1}, {"@01810100023f0502", 1}, {"@0182000002400502", 1}, {"@0183000002420502", 1}, {"@018e000002490502", 1}, {"@05c0000000060002", 1}, {"@05c0000003651302", 1}, {"@05c0000004121302", 1}, {"@05c00000043a1302", 1}, {"@05c00000043b1302", 1}, {"@05c00100001d0002", 1}, {"@08000100003e0402", 1}, {"@08000100025f0402", 1}, {"@0800010003690402", 1}, {"@0800010003820002", 1}, {"@0800010004150402", 1}, {"@08000200003f0402", 1}, {"@0800020002600402", 1}, {"@08000200036a0402", 1}, {"@0800030000400402", 1}, {"@0800030002610402", 1}, {"@08000300036b0402", 1}, {"@08010000025d0402", 1}, {"@0801000004360402", 1}, {"@08020000025e0402", 1}, {"@0802000004370402", 1}, {"@1f000000000a0002", 1}, {"@1f00000002540c02", 1}, {"@22800000002c0002", 1} } },
+	{"00040000001B4F00", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0003000000020002", 1}, {"@0003000000370102", 1}, {"@0003000404421c02", 1}, {"@0003010200410302", 1}, {"@0003010200420302", 1}, {"@0003010200430302", 1}, {"@00030102023e0302", 1}, {"@0004000002620102", 1}, {"@0004010000130002", 1}, {"@0004010004ea0102", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@0008000000030002", 1}, {"@0008000002640102", 1}, {"@00080100042f1a02", 1}, {"@0008ff00023b0702", 1}, {"@000a000000380102", 1}, {"@000a010004c20102", 1}, {"@0013000002660102", 1}, {"@00130000037a0002", 1}, {"@0100000000040002", 1}, {"@01000000034b0902", 1}, {"@01000000034c0902", 1}, {"@01000000034d0902", 1}, {"@01000000034e0902", 1}, {"@01000000034f0902", 1}, {"@0100000003530902", 1}, {"@0100000003540902", 1}, {"@01000000037c0002", 1}, {"@0100000003990902", 1}, {"@0100000004180902", 1}, {"@0100010000160002", 1}, {"@0100010003500902", 1}, {"@01010000000e0002", 1}, {"@0101000003520902", 1}, {"@0101000003560902", 1}, {"@0101000004190902", 1}, {"@0101010000170002", 1}, {"@0101030004140902", 1}, {"@01020100001b0002", 1}, {"@01020100041a0902", 1}, {"@01810000024b0502", 1}, {"@01810000037d0002", 1}, {"@01810100023f0502", 1}, {"@0182000002400502", 1}, {"@0183000002420502", 1}, {"@018e000002490502", 1}, {"@05c0000000060002", 1}, {"@05c0000003651302", 1}, {"@05c0000004121302", 1}, {"@05c00000043a1302", 1}, {"@05c00000043b1302", 1}, {"@05c00100001d0002", 1}, {"@08000100003e0402", 1}, {"@08000100025f0402", 1}, {"@0800010003690402", 1}, {"@0800010003820002", 1}, {"@0800010004150402", 1}, {"@08000200003f0402", 1}, {"@0800020002600402", 1}, {"@08000200036a0402", 1}, {"@0800030000400402", 1}, {"@0800030002610402", 1}, {"@08000300036b0402", 1}, {"@08010000025d0402", 1}, {"@0801000004360402", 1}, {"@08020000025e0402", 1}, {"@0802000004370402", 1}, {"@1f000000000a0002", 1}, {"@1f00000002540c02", 1}, {"@22800000002c0002", 1} } },
+	{"000400000016C200", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0003000000020002", 1}, {"@0003000000370102", 1}, {"@0003000404421c02", 1}, {"@0003010200410302", 1}, {"@0003010200420302", 1}, {"@0003010200430302", 1}, {"@00030102023e0302", 1}, {"@0004000002620102", 1}, {"@0004010000130002", 1}, {"@0004010004ea0102", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@0006000000150002", 1}, {"@0008000000030002", 1}, {"@0008000002640102", 1}, {"@00080100042f1a02", 1}, {"@0008ff00023b0702", 1}, {"@00090000000d0002", 1}, {"@0009000002650102", 1}, {"@000a000000380102", 1}, {"@000a010004c20102", 1} } },
+	{"000400000016C300", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0003000000020002", 1}, {"@0003000000370102", 1}, {"@0003000404421c02", 1}, {"@0003010200410302", 1}, {"@0003010200420302", 1}, {"@0003010200430302", 1}, {"@00030102023e0302", 1}, {"@0004000002620102", 1}, {"@0004010000130002", 1}, {"@0004010004ea0102", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@0006000000150002", 1}, {"@0008000000030002", 1}, {"@0008000002640102", 1}, {"@00080100042f1a02", 1}, {"@0008ff00023b0702", 1}, {"@00090000000d0002", 1}, {"@0009000002650102", 1}, {"@000a000000380102", 1}, {"@000a010004c20102", 1} } },
+	{"0004000000144400", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0003000000020002", 1}, {"@0003000000370102", 1}, {"@0003000404421c02", 1}, {"@0008000000030002", 1}, {"@0008000002640102", 1}, {"@0100000000040002", 1}, {"@01000000034b0902", 1}, {"@01000000034c0902", 1}, {"@01000000034d0902", 1}, {"@01000000034e0902", 1}, {"@01000000034f0902", 1}, {"@0100000003530902", 1}, {"@0100000003540902", 1}, {"@01000000037c0002", 1}, {"@0100000003990902", 1}, {"@0100000004180902", 1}, {"@0580000000050002", 1}, {"@05c0000000060002", 1}, {"@05c0000003651302", 1}, {"@05c0000004121302", 1}, {"@05c00000043a1302", 1}, {"@05c00000043b1302", 1}, {"@0700000000070002", 1}, {"@1f000000000a0002", 1}, {"@1f00000002540c02", 1}, {"@21000000000b0002", 1} } },
+	{"0004000000187E00", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0003000000020002", 1}, {"@0003000000370102", 1}, {"@0003000404421c02", 1}, {"@0003010200410302", 1}, {"@0003010200420302", 1}, {"@0003010200430302", 1}, {"@00030102023e0302", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@000a000000380102", 1}, {"@000a010004c20102", 1}, {"@0100000000040002", 1}, {"@01000000034b0902", 1}, {"@01000000034c0902", 1}, {"@01000000034d0902", 1}, {"@01000000034e0902", 1}, {"@01000000034f0902", 1}, {"@0100000003530902", 1}, {"@0100000003540902", 1}, {"@01000000037c0002", 1}, {"@0100000003990902", 1}, {"@0100000004180902", 1}, {"@0100010000160002", 1}, {"@0100010003500902", 1}, {"@1f000000000a0002", 1}, {"@1f00000002540c02", 1}, {"@1f01000000270002", 1}, {"@1f01000002550c02", 1}, {"@1f02000000280002", 1}, {"@1f02000002560c02", 1} } },
+	{"0004000000196500", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0003000000020002", 1}, {"@0003000000370102", 1}, {"@0003000404421c02", 1}, {"@0003010200410302", 1}, {"@0003010200420302", 1}, {"@0003010200430302", 1}, {"@00030102023e0302", 1}, {"@0004000002620102", 1}, {"@0004010000130002", 1}, {"@0004010004ea0102", 1}, {"@01010000000e0002", 1}, {"@0101000003520902", 1}, {"@0101000003560902", 1}, {"@0101000004190902", 1}, {"@0101010000170002", 1}, {"@0101030004140902", 1}, {"@01810000024b0502", 1}, {"@01810000037d0002", 1}, {"@0181000100440502", 1}, {"@0181000101d40502", 1}, {"@01810100023f0502", 1}, {"@0181010100b40502", 1}, {"@01810201011a0502", 1}, {"@0181030101700502", 1}, {"@0181040103aa0502", 1}, {"@0181050103bf0502", 1}, {"@03710001005c0502", 1}, {"@05c0000000060002", 1}, {"@05c0000003651302", 1}, {"@05c0000004121302", 1}, {"@05c00000043a1302", 1}, {"@05c00000043b1302", 1}, {"@05c00100001d0002", 1}, {"@0700000000070002", 1}, {"@07420000001f0002", 1}, {"@08000100003e0402", 1}, {"@08000100025f0402", 1}, {"@0800010003690402", 1}, {"@0800010003820002", 1}, {"@0800010004150402", 1}, {"@1f000000000a0002", 1}, {"@1f00000002540c02", 1}, {"@2102000000290002", 1} } },
+	{"00040000001C2500", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0003000000020002", 1}, {"@0003000000370102", 1}, {"@0003000404421c02", 1}, {"@0003010200410302", 1}, {"@0003010200420302", 1}, {"@0003010200430302", 1}, {"@00030102023e0302", 1}, {"@0100000000040002", 1}, {"@01000000034b0902", 1}, {"@01000000034c0902", 1}, {"@01000000034d0902", 1}, {"@01000000034e0902", 1}, {"@01000000034f0902", 1}, {"@0100000003530902", 1}, {"@0100000003540902", 1}, {"@01000000037c0002", 1}, {"@0100000003990902", 1}, {"@0100000004180902", 1}, {"@0100010000160002", 1}, {"@0100010003500902", 1}, {"@01010000000e0002", 1}, {"@0101000003520902", 1}, {"@0101000003560902", 1}, {"@0101000004190902", 1}, {"@0101010000170002", 1}, {"@0101030004140902", 1}, {"@01020100001b0002", 1}, {"@01020100041a0902", 1}, {"@01030000024f0902", 1}, {"@0105000003580902", 1}, {"@0106000003590902", 1}, {"@01070000035a0902", 1}, {"@01080000035b0902", 1}, {"@0109000004a30902", 1}, {"@010a000004a40902", 1}, {"@010b000004a50902", 1}, {"@010c000004a60902", 1}, {"@0140000003550902", 1}, {"@01410000035c0902", 1}, {"@0180000000080002", 1}, {"@01810000024b0502", 1}, {"@0181000100440502", 1}, {"@0181000101d40502", 1}, {"@01810100023f0502", 1}, {"@0181010100b40502", 1}, {"@01810201011a0502", 1}, {"@0181030101700502", 1}, {"@0181040103aa0502", 1}, {"@0181050103bf0502", 1}, {"@0182000002400502", 1}, {"@0182000100a80502", 1}, {"@0182000101d80502", 1}, {"@0182000103b20502", 1}, {"@0182010100460502", 1}, {"@0183000002420502", 1}, {"@0183000100450502", 1}, {"@01830101010e0502", 1}, {"@0183020103a80502", 1}, {"@0183030103be0502", 1}, {"@01840000024d0502", 1}, {"@0184050103a90502", 1}, {"@01850001004b0502", 1}, {"@0185020101170502", 1}, {"@0185040101790502", 1}, {"@0186010100af0502", 1}, {"@0186030101750502", 1}, {"@0187000100470502", 1}, {"@0187000103b00502", 1}, {"@0188000002410502", 1}, {"@0188000101120502", 1}, {"@0188000103af0502", 1}, {"@0189000100ab0502", 1}, {"@0189010103b10502", 1}, {"@018a000002450502", 1}, {"@018a000100a90502", 1}, {"@018b000002460502", 1}, {"@018b000101150502", 1}, {"@018c000002430502", 1}, {"@018c0001004c0502", 1}, {"@018c010101180502", 1}, {"@018d0000024c0502", 1}, {"@018d0001010c0502", 1}, {"@018e000002490502", 1}, {"@018e000100490502", 1}, {"@018e010101780502", 1}, {"@018f000100b30502", 1}, {"@018f010101190502", 1}, {"@0190000101710502", 1}, {"@01910001004e0502", 1}, {"@0192000002470502", 1}, {"@01920001010d0502", 1}, {"@0192000103ad0502", 1}, {"@0193000002480502", 1}, {"@0193000101740502", 1}, {"@0193000103ae0502", 1}, {"@01940000024a0502", 1}, {"@0194000100aa0502", 1}, {"@0194000103b60502", 1}, {"@0195000100b00502", 1}, {"@01960000024e0502", 1}, {"@0196000100480502", 1}, {"@0197000101770502", 1}, {"@0198000100b10502", 1}, {"@0199000101160502", 1}, {"@019a000100b70502", 1}, {"@019b000100b60502", 1}, {"@019c000101730502", 1}, {"@019d000100ac0502", 1}, {"@019e000100ad0502", 1}, {"@019f000101110502", 1}, {"@01a00001010f0502", 1}, {"@01a1000101100502", 1}, {"@01a20001017d0502", 1}, {"@01a2000103b90502", 1}, {"@01a30001004a0502", 1}, {"@01a40001004d0502", 1}, {"@01a5000101720502", 1}, {"@01a6000100500502", 1}, {"@01a6000103b70502", 1}, {"@01a7000101140502", 1}, {"@01a80001004f0502", 1}, {"@01a80101017e0502", 1}, {"@01a9000101760502", 1}, {"@01aa000100530502", 1}, {"@01ab0001017c0502", 1}, {"@01ac0001017f0502", 1}, {"@01ad000100b80502", 1}, {"@01ae0001011b0502", 1}, {"@01af0001011c0502", 1}, {"@01b0000100520502", 1}, {"@01b1000100b20502", 1}, {"@01b10101017b0502", 1}, {"@01b3000100b50502", 1}, {"@01b4000101130502", 1}, {"@01b5000100510502", 1}, {"@01b6000100ae0502", 1}, {"@01c1000002440502", 1}, {"@01c1000100540502", 1}, {"@01c10101017a0502", 1}, {"@01c1020103bb0502", 1}, {"@0200000100a10502", 1}, {"@02010001016a0502", 1}, {"@0202000101030502", 1}, {"@02030001019a0502", 1}, {"@0206000103120502", 1}, {"@0208000100960502", 1}, {"@02090001019f0502", 1}, {"@0214000100e40502", 1}, {"@0215000101820502", 1}, {"@0216000100570502", 1}, {"@0217000101b30502", 1}, {"@02190001007e0502", 1}, {"@021a000100da0502", 1}, {"@021b000100800502", 1}, {"@021c000102f70502", 1}, {"@021d000101cd0502", 1}, {"@021e000101230502", 1}, {"@021f000103170502", 1}, {"@0220000100fd0502", 1}, {"@02210001013c0502", 1}, {"@0222000101440502", 1}, {"@022d000100f20502", 1}, {"@022e000101d30502", 1}, {"@022f0001011e0502", 1}, {"@0230000101d20502", 1}, {"@02310001006a0502", 1}, {"@0232000102ea0502", 1}, {"@0233000103060502", 1}, {"@0235000100840502", 1}, {"@0238000102f80502", 1}, {"@023c000100bd0502", 1}, {"@023d000101b50502", 1}, {"@023e000100d10502", 1}, {"@023f000101660502", 1}, {"@024a000101d10502", 1}, {"@024b000101260502", 1}, {"@024d000102f60502", 1}, {"@024f000100810502", 1}, {"@0251000100c10502", 1}, {"@0252000100fe0502", 1}, {"@025d000100550502", 1}, {"@025e000101250502", 1}, {"@025f000101c50502", 1}, {"@025f000101d70502", 1}, {"@0260000100d20502", 1}, {"@0261000100650502", 1}, {"@0262000101370502", 1}, {"@0263000100750502", 1}, {"@0264000101ac0502", 1}, {"@0265000101540502", 1}, {"@0266000100680502", 1}, {"@0267000101080502", 1}, {"@02680001007d0502", 1}, {"@02690001011f0502", 1}, {"@026a000101460502", 1}, {"@026b000100e90502", 1}, {"@026c000100c30502", 1}, {"@026d0001013f0502", 1}, {"@026e000100ba0502", 1}, {"@026f000101900502", 1}, {"@0270000100ff0502", 1}, {"@02710001019b0502", 1}, {"@0272000101860502", 1}, {"@027d000100630502", 1}, {"@027e000101690502", 1}, {"@027f000100b90502", 1}, {"@0280000100830502", 1}, {"@0281000101200502", 1}, {"@0282000101810502", 1}, {"@0282000101d60502", 1}, {"@0283000100c70502", 1}, {"@0284000102fe0502", 1}, {"@0286000103130502", 1}, {"@02870001005a0502", 1}, {"@028a000102e90502", 1}, {"@028b000100e30502", 1}, {"@028c0001013e0502", 1}, {"@028d000101bd0502", 1}, {"@028e0001019e0502", 1}, {"@028f0101031a0502", 1}, {"@0299000100950502", 1}, {"@029a000100ee0502", 1}, {"@029b000100cb0502", 1}, {"@029e0001013d0502", 1}, {"@02a2000101ba0502", 1}, {"@02a3000102ff0502", 1}, {"@02a4000100720502", 1}, {"@02a50001018c0502", 1}, {"@02a6000101240502", 1}, {"@02b1000100690502", 1}, {"@02b2000100c40502", 1}, {"@02b70001030f0502", 1}, {"@02b80001019c0502", 1}, {"@02c3000100dc0502", 1}, {"@02c4000100670502", 1}, {"@02c5000103080502", 1}, {"@02c7000101220502", 1}, {"@02c9000100cd0502", 1}, {"@02ca000101ca0502", 1}, {"@02cb000101360502", 1}, {"@02d6000100560502", 1}, {"@02d7000101300502", 1}, {"@02d8000100e20502", 1}, {"@02d9000101c80502", 1}, {"@02da000101330502", 1}, {"@02db0001005e0502", 1}, {"@02dc000100be0502", 1}, {"@02dd000100ea0502", 1}, {"@02de0001009c0502", 1}, {"@02df000101910502", 1}, {"@02e00101031d0502", 1}, {"@02ea000101800502", 1}, {"@02ea000101d50502", 1}, {"@02eb000100de0502", 1}, {"@02ec000101c40502", 1}, {"@02ed0001015a0502", 1}, {"@02ee000101990502", 1}, {"@02ef000100580502", 1}, {"@02f0000100a70502", 1}, {"@02f1000101450502", 1}, {"@02f2000100cc0502", 1}, {"@02f3000102f90502", 1}, {"@02f4000103050502", 1}, {"@02f8000101380502", 1}, {"@02f9000101020502", 1}, {"@02fa000100970502", 1}, {"@02fb000100900502", 1}, {"@02fc0001018f0502", 1}, {"@0307000100640502", 1}, {"@03080001014d0502", 1}, {"@0309000100c60502", 1}, {"@030a000101c70502", 1}, {"@030b000100790502", 1}, {"@030c000101b80502", 1}, {"@030d000101840502", 1}, {"@030e0001012f0502", 1}, {"@030f0001016d0502", 1}, {"@0310000100f80502", 1}, {"@0311000100d60502", 1}, {"@0312000103090502", 1}, {"@0313000101210502", 1}, {"@0314000102f40502", 1}, {"@0316000101c00502", 1}, {"@0317000100a60502", 1}, {"@03180001006c0502", 1}, {"@0323000100760502", 1}, {"@0324000101890502", 1}, {"@03250001010a0502", 1}, {"@0326000101390502", 1}, {"@0327000101c30502", 1}, {"@0328000102eb0502", 1}, {"@03290001009d0502", 1}, {"@032a000103070502", 1}, {"@032c000101480502", 1}, {"@032d000100bc0502", 1}, {"@032e0101031c0502", 1}, {"@03380001011d0502", 1}, {"@0339000101b10502", 1}, {"@033a000101cc0502", 1}, {"@033b000100fa0502", 1}, {"@033c000101000502", 1}, {"@033d0001013a0502", 1}, {"@033e000101a20502", 1}, {"@033f0001008f0502", 1}, {"@03410001030e0502", 1}, {"@0342000101280502", 1}, {"@0343000102ef0502", 1}, {"@0344000100c50502", 1}, {"@03450001005f0502", 1}, {"@0347000103020502", 1}, {"@03480001006b0502", 1}, {"@03490001018d0502", 1}, {"@034a000101430502", 1}, {"@034b0001009f0502", 1}, {"@0356000101350502", 1}, {"@0357000100eb0502", 1}, {"@0358000102fa0502", 1}, {"@035a000100850502", 1}, {"@035c000101290502", 1}, {"@035d000100c90502", 1}, {"@035e0001018e0502", 1}, {"@0369000100d30502", 1}, {"@036a0001019d0502", 1}, {"@036b0001018b0502", 1}, {"@036d000103040502", 1}, {"@036e000102fb0502", 1}, {"@03700001015d0502", 1}, {"@03710001005c0502", 1}, {"@03720001010b0502", 1}, {"@0373000101340502", 1}, {"@0374010103190502", 1}, {"@037e000101560502", 1}, {"@037f000101aa0502", 1}, {"@0380000101870502", 1}, {"@0381000100d50502", 1}, {"@03820001016b0502", 1}, {"@03830001009b0502", 1}, {"@0384000100860502", 1}, {"@0385000101060502", 1}, {"@0390000101850502", 1}, {"@0392000101270502", 1}, {"@0393000100a00502", 1}, {"@0394000100890502", 1}, {"@0395000102fc0502", 1}, {"@0398000100bf0502", 1}, {"@0399000101c20502", 1}, {"@03a40001014f0502", 1}, {"@03a50001015b0502", 1}, {"@03a6000100c80502", 1}, {"@03a7000101a10502", 1}, {"@03a8000100910502", 1}, {"@03a9000100710502", 1}, {"@03aa000100e60502", 1}, {"@03ab000103160502", 1}, {"@03ac000101880502", 1}, {"@03ad000101b20502", 1}, {"@03ae000100870502", 1}, {"@03af0001012c0502", 1}, {"@03b0000101a90502", 1}, {"@03b1000100f00502", 1}, {"@03bc0001008a0502", 1}, {"@03bd000100f90502", 1}, {"@03be000101980502", 1}, {"@03bf000101bc0502", 1}, {"@03c0000103100502", 1}, {"@03c1000100bb0502", 1}, {"@03c40001012b0502", 1}, {"@03c50001015c0502", 1}, {"@03c6000100930502", 1}, {"@03d1000100c20502", 1}, {"@03d2000100e50502", 1}, {"@03d3000102f30502", 1}, {"@03d6000101570502", 1}, {"@03d7000101b40502", 1}, {"@03d9000101a50502", 1}, {"@03da000101510502", 1}, {"@03db0001006d0502", 1}, {"@03e6000100ec0502", 1}, {"@03e70001012a0502", 1}, {"@03e8000102f50502", 1}, {"@03ea0001030b0502", 1}, {"@03ec000101830502", 1}, {"@03ed000101a30502", 1}, {"@03ee0001008b0502", 1}, {"@03fa000100d00502", 1}, {"@03fb000101cf0502", 1}, {"@03fc000101470502", 1}, {"@03fd000101580502", 1}, {"@03fe000101a40502", 1}, {"@03ff000100f40502", 1}, {"@04000001006f0502", 1}, {"@0401000100660502", 1}, {"@040c000101590502", 1}, {"@040d000100780502", 1}, {"@040e000100880502", 1}, {"@040f000101500502", 1}, {"@04100001007f0502", 1}, {"@0411000101ab0502", 1}, {"@04140001030a0502", 1}, {"@0415000101bb0502", 1}, {"@0416000100fb0502", 1}, {"@0418000100d80502", 1}, {"@041a000100e00502", 1}, {"@041b000100f10502", 1}, {"@041c000101410502", 1}, {"@041d0001018a0502", 1}, {"@041e0001015f0502", 1}, {"@0429000100700502", 1}, {"@042a0001012d0502", 1}, {"@042b000101af0502", 1}, {"@0436000101940502", 1}, {"@0437000101050502", 1}, {"@0438000103000502", 1}, {"@0439000103110502", 1}, {"@043b000103030502", 1}, {"@043c000101cb0502", 1}, {"@043d0001007c0502", 1}, {"@043e000101490502", 1}, {"@043f000101550502", 1}, {"@0440000100ca0502", 1}, {"@044b0001016c0502", 1}, {"@044c0001008e0502", 1}, {"@044d000101930502", 1}, {"@044e000103150502", 1}, {"@0450000100cf0502", 1}, {"@04510001015e0502", 1}, {"@0452000100730502", 1}, {"@0453000101040502", 1}, {"@0454000101ae0502", 1}, {"@045f000101a80502", 1}, {"@0460000100a50502", 1}, {"@0461000101610502", 1}, {"@0462000100f60502", 1}, {"@0463000101310502", 1}, {"@0464000100c00502", 1}, {"@04650001006e0502", 1}, {"@0468000102f20502", 1}, {"@0469000101640502", 1}, {"@046a000101d00502", 1}, {"@046b000101970502", 1}, {"@046c0001008c0502", 1}, {"@046d000100f30502", 1}, {"@0478000101630502", 1}, {"@0479000100920502", 1}, {"@047a000100600502", 1}, {"@047b000100f50502", 1}, {"@047c000101a00502", 1}, {"@047d0001012e0502", 1}, {"@04800001008d0502", 1}, {"@0481000102f10502", 1}, {"@0482000102fd0502", 1}, {"@0483000101b00502", 1}, {"@04850001014c0502", 1}, {"@0486000100fc0502", 1}, {"@0487000101bf0502", 1}, {"@0488000100980502", 1}, {"@0489000100ef0502", 1}, {"@04940001009a0502", 1}, {"@0495000101920502", 1}, {"@0496000100d90502", 1}, {"@04970001007a0502", 1}, {"@04980001014a0502", 1}, {"@0499000100df0502", 1}, {"@049a0001014e0502", 1}, {"@049b000100610502", 1}, {"@049c000101400502", 1}, {"@049d000100ed0502", 1}, {"@049e000101b70502", 1}, {"@049f000103010502", 1}, {"@04a00001016e0502", 1}, {"@04a10001016f0502", 1}, {"@04a2000102e80502", 1}, {"@04a3000101c90502", 1}, {"@04a4000100d40502", 1}, {"@04a5000100740502", 1}, {"@04a6000100a30502", 1}, {"@04a7000101a60502", 1}, {"@04a80101031e0502", 1}, {"@04b2000101b90502", 1}, {"@04b3000100dd0502", 1}, {"@04b40001030c0502", 1}, {"@04b6000102ec0502", 1}, {"@04b9000101600502", 1}, {"@04ba0001005d0502", 1}, {"@04c5000101010502", 1}, {"@04c6000101670502", 1}, {"@04c7000100940502", 1}, {"@04c8000102ed0502", 1}, {"@04c90001030d0502", 1}, {"@04cc000100a40502", 1}, {"@04cd000101520502", 1}, {"@04ce000100db0502", 1}, {"@04cf000100e10502", 1}, {"@04d0000101960502", 1}, {"@04d10001009e0502", 1}, {"@04d2000101a70502", 1}, {"@04d30101031b0502", 1}, {"@04dd000100a20502", 1}, {"@04de000100ce0502", 1}, {"@04df000100e80502", 1}, {"@04e0000100f70502", 1}, {"@04e1000101be0502", 1}, {"@04e2000101090502", 1}, {"@04e3000101650502", 1}, {"@04e4000101b60502", 1}, {"@04e5000101ad0502", 1}, {"@04e6000100820502", 1}, {"@04e7000101320502", 1}, {"@04e8000101ce0502", 1}, {"@04ea000103180502", 1}, {"@04eb000102f00502", 1}, {"@04ec000100770502", 1}, {"@04ed000100620502", 1}, {"@04ee0001014b0502", 1}, {"@04ef0001013b0502", 1}, {"@04fa000101680502", 1}, {"@04fb000101c60502", 1}, {"@04fc000102ee0502", 1}, {"@04fd0001007b0502", 1}, {"@04fe000100590502", 1}, {"@04ff000101620502", 1}, {"@0500000100e70502", 1}, {"@050b000100990502", 1}, {"@050c000101c10502", 1}, {"@050d000101420502", 1}, {"@050e000100d70502", 1}, {"@050f000103140502", 1}, {"@0510000101070502", 1}, {"@0511000101950502", 1}, {"@0513000102e70502", 1}, {"@0514000101530502", 1}, {"@05150001005b0502", 1}, {"@08000100003e0402", 1}, {"@08000100025f0402", 1}, {"@0800010003690402", 1}, {"@0800010004150402", 1}, {"@08000200003f0402", 1}, {"@0800020002600402", 1}, {"@08000200036a0402", 1}, {"@0800030000400402", 1}, {"@0800030002610402", 1}, {"@08000300036b0402", 1}, {"@08010000025d0402", 1}, {"@0801000004360402", 1}, {"@08020000025e0402", 1}, {"@0802000004370402", 1}, {"@0803000003760402", 1}, {"@0803000004380402", 1}, {"@0804000003770402", 1}, {"@0804000004390402", 1}, {"@08050100038e0402", 1}, {"@08050200038f0402", 1}, {"@08050200041b0402", 1}, {"@0805030003900402", 1}, {"@08060100041c0402", 1}, {"@0807000004330402", 1}, {"@0808000004340402", 1}, {"@0809000004350402", 1}, {"@0a12000103c90502", 1}, {"@0a1c000103d30502", 1}, {"@1f000000000a0002", 1}, {"@1f00000002540c02", 1}, {"@1f01000000270002", 1}, {"@1f01000002550c02", 1}, {"@1f02000000280002", 1}, {"@1f02000002560c02", 1}, {"@1f03000002570c02", 1} } },
+	{"00040000000EDF00", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0003000000020002", 1}, {"@0003000000370102", 1}, {"@0003000404421c02", 1}, {"@0003010200410302", 1}, {"@0003010200420302", 1}, {"@0003010200430302", 1}, {"@00030102023e0302", 1}, {"@0004000002620102", 1}, {"@0004010000130002", 1}, {"@0004010004ea0102", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@0006000000150002", 1}, {"@00070000001a0002", 1}, {"@0007000002630102", 1}, {"@0008000000030002", 1}, {"@0008000002640102", 1}, {"@00080100042f1a02", 1}, {"@0008ff00023b0702", 1}, {"@00090000000d0002", 1}, {"@0009000002650102", 1}, {"@0100000000040002", 1}, {"@01000000034b0902", 1}, {"@01000000034c0902", 1}, {"@01000000034d0902", 1}, {"@01000000034e0902", 1}, {"@01000000034f0902", 1}, {"@0100000003530902", 1}, {"@0100000003540902", 1}, {"@01000000037c0002", 1}, {"@0100000003990902", 1}, {"@0100000004180902", 1}, {"@0100010000160002", 1}, {"@0100010003500902", 1}, {"@01010000000e0002", 1}, {"@0101000003520902", 1}, {"@0101000003560902", 1}, {"@0101000004190902", 1}, {"@0101010000170002", 1}, {"@0101030004140902", 1}, {"@01020100001b0002", 1}, {"@01020100041a0902", 1}, {"@0180000000080002", 1}, {"@0580000000050002", 1}, {"@05810000001c0002", 1}, {"@05c0000000060002", 1}, {"@05c0000003651302", 1}, {"@05c0000004121302", 1}, {"@05c00000043a1302", 1}, {"@05c00000043b1302", 1}, {"@05c00100001d0002", 1}, {"@0600000000120002", 1}, {"@06400100001e0002", 1}, {"@06c00000000f0002", 1}, {"@0700000000070002", 1}, {"@0740000000100002", 1}, {"@0741000000200002", 1}, {"@07420000001f0002", 1}, {"@07800000002d0002", 1}, {"@07810000002e0002", 1}, {"@0781000000330002", 1}, {"@07820000002f0002", 1}, {"@07c0000000210002", 1}, {"@07c0010000220002", 1}, {"@07c0020000230002", 1}, {"@1906000000240002", 1}, {"@1919000000090002", 1}, {"@1927000000260002", 1}, {"@19960000023d0002", 1}, {"@1ac0000000110002", 1}, {"@1b92000000250002", 1}, {"@1f000000000a0002", 1}, {"@1f00000002540c02", 1}, {"@1f01000000270002", 1}, {"@1f01000002550c02", 1}, {"@1f02000000280002", 1}, {"@1f02000002560c02", 1}, {"@21000000000b0002", 1}, {"@2101000000180002", 1}, {"@2102000000290002", 1}, {"@21030000002a0002", 1}, {"@2104000002520002", 1}, {"@21050000025a0002", 1}, {"@2105010003630002", 1}, {"@22400000002b0002", 1}, {"@22800000002c0002", 1}, {"@2281000002510002", 1}, {"@3200000000300002", 1}, {"@32400000025b0002", 1}, {"@3240010003640002", 1}, {"@3340000000320002", 1}, {"@3480000000310002", 1}, {"@3480000002580002", 1}, {"@3480000003791502", 1}, {"@34c0000002530002", 1}, {"@34c0000104a81d02", 1}, {"@34c0000104cb1d02", 1}, {"@3600000002590002", 1}, {"@3600010003620002", 1} } },
+	{"00040000000EE000", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0003000000020002", 1}, {"@0003000000370102", 1}, {"@0003000404421c02", 1}, {"@0003010200410302", 1}, {"@0003010200420302", 1}, {"@0003010200430302", 1}, {"@00030102023e0302", 1}, {"@0004000002620102", 1}, {"@0004010000130002", 1}, {"@0004010004ea0102", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@0006000000150002", 1}, {"@00070000001a0002", 1}, {"@0007000002630102", 1}, {"@0008000000030002", 1}, {"@0008000002640102", 1}, {"@00080100042f1a02", 1}, {"@0008ff00023b0702", 1}, {"@00090000000d0002", 1}, {"@0009000002650102", 1}, {"@0100000000040002", 1}, {"@01000000034b0902", 1}, {"@01000000034c0902", 1}, {"@01000000034d0902", 1}, {"@01000000034e0902", 1}, {"@01000000034f0902", 1}, {"@0100000003530902", 1}, {"@0100000003540902", 1}, {"@01000000037c0002", 1}, {"@0100000003990902", 1}, {"@0100000004180902", 1}, {"@0100010000160002", 1}, {"@0100010003500902", 1}, {"@01010000000e0002", 1}, {"@0101000003520902", 1}, {"@0101000003560902", 1}, {"@0101000004190902", 1}, {"@0101010000170002", 1}, {"@0101030004140902", 1}, {"@01020100001b0002", 1}, {"@01020100041a0902", 1}, {"@0180000000080002", 1}, {"@0580000000050002", 1}, {"@05810000001c0002", 1}, {"@05c0000000060002", 1}, {"@05c0000003651302", 1}, {"@05c0000004121302", 1}, {"@05c00000043a1302", 1}, {"@05c00000043b1302", 1}, {"@05c00100001d0002", 1}, {"@0600000000120002", 1}, {"@06400100001e0002", 1}, {"@06c00000000f0002", 1}, {"@0700000000070002", 1}, {"@0740000000100002", 1}, {"@0741000000200002", 1}, {"@07420000001f0002", 1}, {"@07800000002d0002", 1}, {"@07810000002e0002", 1}, {"@0781000000330002", 1}, {"@07820000002f0002", 1}, {"@07c0000000210002", 1}, {"@07c0010000220002", 1}, {"@07c0020000230002", 1}, {"@1906000000240002", 1}, {"@1919000000090002", 1}, {"@1927000000260002", 1}, {"@19960000023d0002", 1}, {"@1ac0000000110002", 1}, {"@1b92000000250002", 1}, {"@1f000000000a0002", 1}, {"@1f00000002540c02", 1}, {"@1f01000000270002", 1}, {"@1f01000002550c02", 1}, {"@1f02000000280002", 1}, {"@1f02000002560c02", 1}, {"@21000000000b0002", 1}, {"@2101000000180002", 1}, {"@2102000000290002", 1}, {"@21030000002a0002", 1}, {"@2104000002520002", 1}, {"@21050000025a0002", 1}, {"@2105010003630002", 1}, {"@22400000002b0002", 1}, {"@22800000002c0002", 1}, {"@2281000002510002", 1}, {"@3200000000300002", 1}, {"@32400000025b0002", 1}, {"@3240010003640002", 1}, {"@3340000000320002", 1}, {"@3480000000310002", 1}, {"@3480000002580002", 1}, {"@3480000003791502", 1}, {"@34c0000002530002", 1}, {"@34c0000104a81d02", 1}, {"@34c0000104cb1d02", 1}, {"@3600000002590002", 1}, {"@3600010003620002", 1} } },
+	{"00040000001D1C00", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0003000000020002", 1}, {"@0003000000370102", 1}, {"@0003000404421c02", 1}, {"@0003010200410302", 1}, {"@0003010200420302", 1}, {"@0003010200430302", 1}, {"@00030102023e0302", 1}, {"@0004000002620102", 1}, {"@0004010000130002", 1}, {"@0004010004ea0102", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@0006000000150002", 1}, {"@00070000001a0002", 1}, {"@0007000002630102", 1}, {"@0008000000030002", 1}, {"@0008000002640102", 1}, {"@00080100042f1a02", 1}, {"@0008ff00023b0702", 1}, {"@00090000000d0002", 1}, {"@0009000002650102", 1}, {"@000a000000380102", 1}, {"@000a010004c20102", 1}, {"@0013000002660102", 1}, {"@00130000037a0002", 1}, {"@0014000002670102", 1}, {"@0015000003670102", 1}, {"@0017000002680102", 1}, {"@0023000003680102", 1}, {"@00800102035d0302", 1}, {"@0100000000040002", 1}, {"@01000000034b0902", 1}, {"@01000000034c0902", 1}, {"@01000000034d0902", 1}, {"@01000000034e0902", 1}, {"@01000000034f0902", 1}, {"@0100000003530902", 1}, {"@0100000003540902", 1}, {"@01000000037c0002", 1}, {"@0100000003990902", 1}, {"@0100000004180902", 1}, {"@0100010000160002", 1}, {"@0100010003500902", 1}, {"@01010000000e0002", 1}, {"@0101000003520902", 1}, {"@0101000003560902", 1}, {"@0101000004190902", 1}, {"@0101010000170002", 1}, {"@0101030004140902", 1}, {"@01020100001b0002", 1}, {"@01020100041a0902", 1}, {"@01030000024f0902", 1}, {"@0105000003580902", 1}, {"@0106000003590902", 1}, {"@01070000035a0902", 1}, {"@01080000035b0902", 1}, {"@0140000003550902", 1}, {"@01410000035c0902", 1}, {"@0180000000080002", 1}, {"@01810000024b0502", 1}, {"@01810000037d0002", 1}, {"@01810100023f0502", 1}, {"@0182000002400502", 1}, {"@0183000002420502", 1}, {"@01840000024d0502", 1}, {"@0188000002410502", 1}, {"@018a000002450502", 1}, {"@018b000002460502", 1}, {"@018c000002430502", 1}, {"@018d0000024c0502", 1}, {"@018e000002490502", 1}, {"@0192000002470502", 1}, {"@0193000002480502", 1}, {"@01940000024a0502", 1}, {"@01960000024e0502", 1}, {"@01c1000002440502", 1}, {"@0580000000050002", 1}, {"@05810000001c0002", 1}, {"@05c0000000060002", 1}, {"@05c0000003651302", 1}, {"@05c0000004121302", 1}, {"@05c00000043a1302", 1}, {"@05c00000043b1302", 1}, {"@05c00100001d0002", 1}, {"@05c1000003661302", 1}, {"@0600000000120002", 1}, {"@06400100001e0002", 1}, {"@06420000035f1102", 1}, {"@06c00000000f0002", 1}, {"@0700000000070002", 1}, {"@07420000001f0002", 1}, {"@07800000002d0002", 1}, {"@07810000002e0002", 1}, {"@0781000000330002", 1}, {"@07820000002f0002", 1}, {"@08000100003e0402", 1}, {"@08000100025f0402", 1}, {"@0800010003690402", 1}, {"@0800010003820002", 1}, {"@0800010004150402", 1}, {"@08000200003f0402", 1}, {"@0800020002600402", 1}, {"@08000200036a0402", 1}, {"@0800030000400402", 1}, {"@0800030002610402", 1}, {"@08000300036b0402", 1}, {"@08010000025d0402", 1}, {"@0801000004360402", 1}, {"@08020000025e0402", 1}, {"@0802000004370402", 1}, {"@0803000003760402", 1}, {"@0803000004380402", 1}, {"@0804000003770402", 1}, {"@0804000004390402", 1} } },
+	{"00040000001A4100", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0003000000020002", 1}, {"@0003000000370102", 1}, {"@0003000404421c02", 1}, {"@0003010200410302", 1}, {"@0003010200420302", 1}, {"@0003010200420302", 1}, {"@0003010200430302", 1}, {"@0003010200430302", 1}, {"@00030102023e0302", 1}, {"@0004000002620102", 1}, {"@0004010000130002", 1}, {"@0004010004ea0102", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@0006000000150002", 1}, {"@00070000001a0002", 1}, {"@0007000002630102", 1}, {"@0008000000030002", 1}, {"@0008000002640102", 1}, {"@00080100042f1a02", 1}, {"@0008ff00023b0702", 1}, {"@00090000000d0002", 1}, {"@0009000002650102", 1}, {"@000a000000380102", 1}, {"@000a010004c20102", 1}, {"@0013000002660102", 1}, {"@00130000037a0002", 1}, {"@0014000002670102", 1}, {"@0017000002680102", 1}, {"@00800102035d0302", 1}, {"@0100000000040002", 1}, {"@01000000034b0902", 1}, {"@01000000034c0902", 1}, {"@01000000034d0902", 1}, {"@01000000034e0902", 1}, {"@01000000034f0902", 1}, {"@0100000003530902", 1}, {"@0100000003540902", 1}, {"@01000000037c0002", 1}, {"@0100000003990902", 1}, {"@0100000004180902", 1}, {"@0100010000160002", 1}, {"@0100010003500902", 1}, {"@01010000000e0002", 1}, {"@0101000003520902", 1}, {"@0101000003560902", 1}, {"@0101000004190902", 1}, {"@0101010000170002", 1}, {"@0101030004140902", 1}, {"@01020100001b0002", 1}, {"@01020100041a0902", 1}, {"@01030000024f0902", 1}, {"@0180000000080002", 1}, {"@01810000024b0502", 1}, {"@01810000037d0002", 1}, {"@0181000100440502", 1}, {"@0181000101d40502", 1}, {"@01810100023f0502", 1}, {"@0181010100b40502", 1}, {"@01810201011a0502", 1}, {"@0181030101700502", 1}, {"@0181040103aa0502", 1}, {"@0181050103bf0502", 1}, {"@0182000002400502", 1}, {"@0182000100a80502", 1}, {"@0182000101d80502", 1}, {"@0182000103b20502", 1}, {"@0182010100460502", 1}, {"@0183000002420502", 1}, {"@0183000100450502", 1}, {"@01830101010e0502", 1}, {"@0183020103a80502", 1}, {"@0183030103be0502", 1}, {"@01840000024d0502", 1}, {"@0188000002410502", 1}, {"@0188000101120502", 1}, {"@0188000103af0502", 1}, {"@018a000002450502", 1}, {"@018a000100a90502", 1}, {"@018b000002460502", 1}, {"@018b000101150502", 1}, {"@018c000002430502", 1}, {"@018c0001004c0502", 1}, {"@018c010101180502", 1}, {"@018d0000024c0502", 1}, {"@018d0001010c0502", 1}, {"@018e000002490502", 1}, {"@018e000100490502", 1}, {"@018e010101780502", 1}, {"@0192000002470502", 1}, {"@01920001010d0502", 1}, {"@0192000103ad0502", 1}, {"@0193000002480502", 1}, {"@0193000101740502", 1}, {"@0193000103ae0502", 1}, {"@01940000024a0502", 1}, {"@0194000100aa0502", 1}, {"@0194000103b60502", 1}, {"@01960000024e0502", 1}, {"@0196000100480502", 1}, {"@01c1000002440502", 1}, {"@01c1000100540502", 1}, {"@01c10101017a0502", 1}, {"@01c1020103bb0502", 1}, {"@026c000100c30502", 1}, {"@03710001005c0502", 1}, {"@0580000000050002", 1}, {"@05810000001c0002", 1}, {"@05c0000000060002", 1}, {"@05c0000003651302", 1}, {"@05c0000004121302", 1}, {"@05c00000043a1302", 1}, {"@05c00000043b1302", 1}, {"@05c00100001d0002", 1}, {"@0600000000120002", 1}, {"@06400100001e0002", 1}, {"@06c00000000f0002", 1}, {"@0700000000070002", 1}, {"@0740000000100002", 1}, {"@0741000000200002", 1}, {"@07420000001f0002", 1}, {"@07800000002d0002", 1}, {"@07810000002e0002", 1}, {"@0781000000330002", 1}, {"@07820000002f0002", 1}, {"@07c0000000210002", 1}, {"@07c0010000220002", 1}, {"@07c0020000230002", 1}, {"@08000100003e0402", 1}, {"@08000100025f0402", 1}, {"@0800010003690402", 1}, {"@0800010003820002", 1}, {"@0800010004150402", 1}, {"@08000200003f0402", 1}, {"@0800020002600402", 1}, {"@08000200036a0402", 1}, {"@0800030000400402", 1}, {"@0800030002610402", 1}, {"@08000300036b0402", 1}, {"@08010000025d0402", 1}, {"@0801000004360402", 1}, {"@08020000025e0402", 1}, {"@0802000004370402", 1}, {"@1f000000000a0002", 1}, {"@1f00000002540c02", 1}, {"@1f01000000270002", 1}, {"@1f01000002550c02", 1}, {"@1f02000000280002", 1}, {"@1f02000002560c02", 1}, {"@1f03000002570c02", 1}, {"@21000000000b0002", 1}, {"@2101000000180002", 1}, {"@2102000000290002", 1}, {"@21030000002a0002", 1}, {"@2104000002520002", 1}, {"@21050000025a0002", 1}, {"@2105010003630002", 1}, {"@22400000002b0002", 1}, {"@22800000002c0002", 1}, {"@2281000002510002", 1}, {"@3200000000300002", 1}, {"@3340000000320002", 1}, {"@3480000000310002", 1}, {"@3480000002580002", 1}, {"@3480000003791502", 1}, {"@34c0000002530002", 1}, {"@34c0000104a81d02", 1}, {"@34c0000104cb1d02", 1} } },
+	{"00040000001A4200", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0003000000020002", 1}, {"@0003000000370102", 1}, {"@0003000404421c02", 1}, {"@0003010200410302", 1}, {"@0003010200420302", 1}, {"@0003010200420302", 1}, {"@0003010200430302", 1}, {"@0003010200430302", 1}, {"@00030102023e0302", 1}, {"@0004000002620102", 1}, {"@0004010000130002", 1}, {"@0004010004ea0102", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@0006000000150002", 1}, {"@00070000001a0002", 1}, {"@0007000002630102", 1}, {"@0008000000030002", 1}, {"@0008000002640102", 1}, {"@00080100042f1a02", 1}, {"@0008ff00023b0702", 1}, {"@00090000000d0002", 1}, {"@0009000002650102", 1}, {"@000a000000380102", 1}, {"@000a010004c20102", 1}, {"@0013000002660102", 1}, {"@00130000037a0002", 1}, {"@0014000002670102", 1}, {"@0017000002680102", 1}, {"@00800102035d0302", 1}, {"@0100000000040002", 1}, {"@01000000034b0902", 1}, {"@01000000034c0902", 1}, {"@01000000034d0902", 1}, {"@01000000034e0902", 1}, {"@01000000034f0902", 1}, {"@0100000003530902", 1}, {"@0100000003540902", 1}, {"@01000000037c0002", 1}, {"@0100000003990902", 1}, {"@0100000004180902", 1}, {"@0100010000160002", 1}, {"@0100010003500902", 1}, {"@01010000000e0002", 1}, {"@0101000003520902", 1}, {"@0101000003560902", 1}, {"@0101000004190902", 1}, {"@0101010000170002", 1}, {"@0101030004140902", 1}, {"@01020100001b0002", 1}, {"@01020100041a0902", 1}, {"@01030000024f0902", 1}, {"@0180000000080002", 1}, {"@01810000024b0502", 1}, {"@01810000037d0002", 1}, {"@0181000100440502", 1}, {"@0181000101d40502", 1}, {"@01810100023f0502", 1}, {"@0181010100b40502", 1}, {"@01810201011a0502", 1}, {"@0181030101700502", 1}, {"@0181040103aa0502", 1}, {"@0181050103bf0502", 1}, {"@0182000002400502", 1}, {"@0182000100a80502", 1}, {"@0182000101d80502", 1}, {"@0182000103b20502", 1}, {"@0182010100460502", 1}, {"@0183000002420502", 1}, {"@0183000100450502", 1}, {"@01830101010e0502", 1}, {"@0183020103a80502", 1}, {"@0183030103be0502", 1}, {"@01840000024d0502", 1}, {"@0188000002410502", 1}, {"@0188000101120502", 1}, {"@0188000103af0502", 1}, {"@018a000002450502", 1}, {"@018a000100a90502", 1}, {"@018b000002460502", 1}, {"@018b000101150502", 1}, {"@018c000002430502", 1}, {"@018c0001004c0502", 1}, {"@018c010101180502", 1}, {"@018d0000024c0502", 1}, {"@018d0001010c0502", 1}, {"@018e000002490502", 1}, {"@018e000100490502", 1}, {"@018e010101780502", 1}, {"@0192000002470502", 1}, {"@01920001010d0502", 1}, {"@0192000103ad0502", 1}, {"@0193000002480502", 1}, {"@0193000101740502", 1}, {"@0193000103ae0502", 1}, {"@01940000024a0502", 1}, {"@0194000100aa0502", 1}, {"@0194000103b60502", 1}, {"@01960000024e0502", 1}, {"@0196000100480502", 1}, {"@01c1000002440502", 1}, {"@01c1000100540502", 1}, {"@01c10101017a0502", 1}, {"@01c1020103bb0502", 1}, {"@026c000100c30502", 1}, {"@03710001005c0502", 1}, {"@0580000000050002", 1}, {"@05810000001c0002", 1}, {"@05c0000000060002", 1}, {"@05c0000003651302", 1}, {"@05c0000004121302", 1}, {"@05c00000043a1302", 1}, {"@05c00000043b1302", 1}, {"@05c00100001d0002", 1}, {"@0600000000120002", 1}, {"@06400100001e0002", 1}, {"@06c00000000f0002", 1}, {"@0700000000070002", 1}, {"@0740000000100002", 1}, {"@0741000000200002", 1}, {"@07420000001f0002", 1}, {"@07800000002d0002", 1}, {"@07810000002e0002", 1}, {"@0781000000330002", 1}, {"@07820000002f0002", 1}, {"@07c0000000210002", 1}, {"@07c0010000220002", 1}, {"@07c0020000230002", 1}, {"@08000100003e0402", 1}, {"@08000100025f0402", 1}, {"@0800010003690402", 1}, {"@0800010003820002", 1}, {"@0800010004150402", 1}, {"@08000200003f0402", 1}, {"@0800020002600402", 1}, {"@08000200036a0402", 1}, {"@0800030000400402", 1}, {"@0800030002610402", 1}, {"@08000300036b0402", 1}, {"@08010000025d0402", 1}, {"@0801000004360402", 1}, {"@08020000025e0402", 1}, {"@0802000004370402", 1}, {"@1f000000000a0002", 1}, {"@1f00000002540c02", 1}, {"@1f01000000270002", 1}, {"@1f01000002550c02", 1}, {"@1f02000000280002", 1}, {"@1f02000002560c02", 1}, {"@1f03000002570c02", 1}, {"@21000000000b0002", 1}, {"@2101000000180002", 1}, {"@2102000000290002", 1}, {"@21030000002a0002", 1}, {"@2104000002520002", 1}, {"@21050000025a0002", 1}, {"@2105010003630002", 1}, {"@22400000002b0002", 1}, {"@22800000002c0002", 1}, {"@2281000002510002", 1}, {"@3200000000300002", 1}, {"@3340000000320002", 1}, {"@3480000000310002", 1}, {"@3480000002580002", 1}, {"@3480000003791502", 1}, {"@34c0000002530002", 1}, {"@34c0000104a81d02", 1}, {"@34c0000104cb1d02", 1} } },
+	{"00040000001B6C00", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0003000000020002", 1}, {"@0003000000370102", 1}, {"@0003000404421c02", 1}, {"@0003010200410302", 1}, {"@0003010200420302", 1}, {"@0003010200420302", 1}, {"@0003010200430302", 1}, {"@0003010200430302", 1}, {"@00030102023e0302", 1}, {"@0004000002620102", 1}, {"@0004010000130002", 1}, {"@0004010004ea0102", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@0006000000150002", 1}, {"@00070000001a0002", 1}, {"@0007000002630102", 1}, {"@0008000000030002", 1}, {"@0008000002640102", 1}, {"@00080100042f1a02", 1}, {"@0008ff00023b0702", 1}, {"@00090000000d0002", 1}, {"@0009000002650102", 1}, {"@000a000000380102", 1}, {"@000a010004c20102", 1}, {"@0013000002660102", 1}, {"@00130000037a0002", 1}, {"@0014000002670102", 1}, {"@0017000002680102", 1}, {"@00800102035d0302", 1}, {"@0100000000040002", 1}, {"@01000000034b0902", 1}, {"@01000000034c0902", 1}, {"@01000000034d0902", 1}, {"@01000000034e0902", 1}, {"@01000000034f0902", 1}, {"@0100000003530902", 1}, {"@0100000003540902", 1}, {"@01000000037c0002", 1}, {"@0100000003990902", 1}, {"@0100000004180902", 1}, {"@0100010000160002", 1}, {"@0100010003500902", 1}, {"@01010000000e0002", 1}, {"@0101000003520902", 1}, {"@0101000003560902", 1}, {"@0101000004190902", 1}, {"@0101010000170002", 1}, {"@0101030004140902", 1}, {"@01020100001b0002", 1}, {"@01020100041a0902", 1}, {"@01030000024f0902", 1}, {"@0180000000080002", 1}, {"@01810000024b0502", 1}, {"@01810000037d0002", 1}, {"@0181000100440502", 1}, {"@0181000101d40502", 1}, {"@01810100023f0502", 1}, {"@0181010100b40502", 1}, {"@01810201011a0502", 1}, {"@0181030101700502", 1}, {"@0181040103aa0502", 1}, {"@0181050103bf0502", 1}, {"@0182000002400502", 1}, {"@0182000100a80502", 1}, {"@0182000101d80502", 1}, {"@0182000103b20502", 1}, {"@0182010100460502", 1}, {"@0183000002420502", 1}, {"@0183000100450502", 1}, {"@01830101010e0502", 1}, {"@0183020103a80502", 1}, {"@0183030103be0502", 1}, {"@01840000024d0502", 1}, {"@0188000002410502", 1}, {"@0188000101120502", 1}, {"@0188000103af0502", 1}, {"@018a000002450502", 1}, {"@018a000100a90502", 1}, {"@018b000002460502", 1}, {"@018b000101150502", 1}, {"@018c000002430502", 1}, {"@018c0001004c0502", 1}, {"@018c010101180502", 1}, {"@018d0000024c0502", 1}, {"@018d0001010c0502", 1}, {"@018e000002490502", 1}, {"@018e000100490502", 1}, {"@018e010101780502", 1}, {"@0192000002470502", 1}, {"@01920001010d0502", 1}, {"@0192000103ad0502", 1}, {"@0193000002480502", 1}, {"@0193000101740502", 1}, {"@0193000103ae0502", 1}, {"@01940000024a0502", 1}, {"@0194000100aa0502", 1}, {"@0194000103b60502", 1}, {"@01960000024e0502", 1}, {"@0196000100480502", 1}, {"@01c1000002440502", 1}, {"@01c1000100540502", 1}, {"@01c10101017a0502", 1}, {"@01c1020103bb0502", 1}, {"@026c000100c30502", 1}, {"@03710001005c0502", 1}, {"@0580000000050002", 1}, {"@05810000001c0002", 1}, {"@05c0000000060002", 1}, {"@05c0000003651302", 1}, {"@05c0000004121302", 1}, {"@05c00000043a1302", 1}, {"@05c00000043b1302", 1}, {"@05c00100001d0002", 1}, {"@0600000000120002", 1}, {"@06400100001e0002", 1}, {"@06c00000000f0002", 1}, {"@0700000000070002", 1}, {"@0740000000100002", 1}, {"@0741000000200002", 1}, {"@07420000001f0002", 1}, {"@07800000002d0002", 1}, {"@07810000002e0002", 1}, {"@0781000000330002", 1}, {"@07820000002f0002", 1}, {"@07c0000000210002", 1}, {"@07c0010000220002", 1}, {"@07c0020000230002", 1}, {"@08000100003e0402", 1}, {"@08000100025f0402", 1}, {"@0800010003690402", 1}, {"@0800010003820002", 1}, {"@0800010004150402", 1}, {"@08000200003f0402", 1}, {"@0800020002600402", 1}, {"@08000200036a0402", 1}, {"@0800030000400402", 1}, {"@0800030002610402", 1}, {"@08000300036b0402", 1}, {"@08010000025d0402", 1}, {"@0801000004360402", 1}, {"@08020000025e0402", 1}, {"@0802000004370402", 1}, {"@1f000000000a0002", 1}, {"@1f00000002540c02", 1}, {"@1f01000000270002", 1}, {"@1f01000002550c02", 1}, {"@1f02000000280002", 1}, {"@1f02000002560c02", 1}, {"@1f03000002570c02", 1}, {"@21000000000b0002", 1}, {"@2101000000180002", 1}, {"@2102000000290002", 1}, {"@21030000002a0002", 1}, {"@2104000002520002", 1}, {"@21050000025a0002", 1}, {"@2105010003630002", 1}, {"@22400000002b0002", 1}, {"@22800000002c0002", 1}, {"@2281000002510002", 1}, {"@3200000000300002", 1}, {"@3340000000320002", 1}, {"@3480000000310002", 1}, {"@3480000002580002", 1}, {"@3480000003791502", 1}, {"@34c0000002530002", 1}, {"@34c0000104a81d02", 1}, {"@34c0000104cb1d02", 1} } },
+	{"00040000001B6D00", { {"@0000000000000002", 1}, {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0000000002380602", 1}, {"@0000000002390602", 1}, {"@0000000003710102", 1}, {"@00000004043f1c02", 1}, {"@0000010000190002", 1}, {"@0000030003a60102", 1}, {"@0000040004c10102", 1}, {"@0000050004e90102", 1}, {"@00010000000c0002", 1}, {"@0001000000350102", 1}, {"@0001000404401c02", 1}, {"@0002000000010002", 1}, {"@0002000000360102", 1}, {"@0002000003720102", 1}, {"@0002000404411c02", 1}, {"@0002010003a70102", 1}, {"@0003000000020002", 1}, {"@0003000000370102", 1}, {"@0003000404421c02", 1}, {"@0003010200410302", 1}, {"@0003010200420302", 1}, {"@0003010200420302", 1}, {"@0003010200430302", 1}, {"@0003010200430302", 1}, {"@00030102023e0302", 1}, {"@0004000002620102", 1}, {"@0004010000130002", 1}, {"@0004010004ea0102", 1}, {"@0005000000140002", 1}, {"@0005000000390102", 1}, {"@0005000003730102", 1}, {"@0005ff00023a0702", 1}, {"@0006000000150002", 1}, {"@00070000001a0002", 1}, {"@0007000002630102", 1}, {"@0008000000030002", 1}, {"@0008000002640102", 1}, {"@00080100042f1a02", 1}, {"@0008ff00023b0702", 1}, {"@00090000000d0002", 1}, {"@0009000002650102", 1}, {"@000a000000380102", 1}, {"@000a010004c20102", 1}, {"@0013000002660102", 1}, {"@00130000037a0002", 1}, {"@0014000002670102", 1}, {"@0017000002680102", 1}, {"@00800102035d0302", 1}, {"@0100000000040002", 1}, {"@01000000034b0902", 1}, {"@01000000034c0902", 1}, {"@01000000034d0902", 1}, {"@01000000034e0902", 1}, {"@01000000034f0902", 1}, {"@0100000003530902", 1}, {"@0100000003540902", 1}, {"@01000000037c0002", 1}, {"@0100000003990902", 1}, {"@0100000004180902", 1}, {"@0100010000160002", 1}, {"@0100010003500902", 1}, {"@01010000000e0002", 1}, {"@0101000003520902", 1}, {"@0101000003560902", 1}, {"@0101000004190902", 1}, {"@0101010000170002", 1}, {"@0101030004140902", 1}, {"@01020100001b0002", 1}, {"@01020100041a0902", 1}, {"@01030000024f0902", 1}, {"@0180000000080002", 1}, {"@01810000024b0502", 1}, {"@01810000037d0002", 1}, {"@0181000100440502", 1}, {"@0181000101d40502", 1}, {"@01810100023f0502", 1}, {"@0181010100b40502", 1}, {"@01810201011a0502", 1}, {"@0181030101700502", 1}, {"@0181040103aa0502", 1}, {"@0181050103bf0502", 1}, {"@0182000002400502", 1}, {"@0182000100a80502", 1}, {"@0182000101d80502", 1}, {"@0182000103b20502", 1}, {"@0182010100460502", 1}, {"@0183000002420502", 1}, {"@0183000100450502", 1}, {"@01830101010e0502", 1}, {"@0183020103a80502", 1}, {"@0183030103be0502", 1}, {"@01840000024d0502", 1}, {"@0188000002410502", 1}, {"@0188000101120502", 1}, {"@0188000103af0502", 1}, {"@018a000002450502", 1}, {"@018a000100a90502", 1}, {"@018b000002460502", 1}, {"@018b000101150502", 1}, {"@018c000002430502", 1}, {"@018c0001004c0502", 1}, {"@018c010101180502", 1}, {"@018d0000024c0502", 1}, {"@018d0001010c0502", 1}, {"@018e000002490502", 1}, {"@018e000100490502", 1}, {"@018e010101780502", 1}, {"@0192000002470502", 1}, {"@01920001010d0502", 1}, {"@0192000103ad0502", 1}, {"@0193000002480502", 1}, {"@0193000101740502", 1}, {"@0193000103ae0502", 1}, {"@01940000024a0502", 1}, {"@0194000100aa0502", 1}, {"@0194000103b60502", 1}, {"@01960000024e0502", 1}, {"@0196000100480502", 1}, {"@01c1000002440502", 1}, {"@01c1000100540502", 1}, {"@01c10101017a0502", 1}, {"@01c1020103bb0502", 1}, {"@026c000100c30502", 1}, {"@03710001005c0502", 1}, {"@0580000000050002", 1}, {"@05810000001c0002", 1}, {"@05c0000000060002", 1}, {"@05c0000003651302", 1}, {"@05c0000004121302", 1}, {"@05c00000043a1302", 1}, {"@05c00000043b1302", 1}, {"@05c00100001d0002", 1}, {"@0600000000120002", 1}, {"@06400100001e0002", 1}, {"@06c00000000f0002", 1}, {"@0700000000070002", 1}, {"@0740000000100002", 1}, {"@0741000000200002", 1}, {"@07420000001f0002", 1}, {"@07800000002d0002", 1}, {"@07810000002e0002", 1}, {"@0781000000330002", 1}, {"@07820000002f0002", 1}, {"@07c0000000210002", 1}, {"@07c0010000220002", 1}, {"@07c0020000230002", 1}, {"@08000100003e0402", 1}, {"@08000100025f0402", 1}, {"@0800010003690402", 1}, {"@0800010003820002", 1}, {"@0800010004150402", 1}, {"@08000200003f0402", 1}, {"@0800020002600402", 1}, {"@08000200036a0402", 1}, {"@0800030000400402", 1}, {"@0800030002610402", 1}, {"@08000300036b0402", 1}, {"@08010000025d0402", 1}, {"@0801000004360402", 1}, {"@08020000025e0402", 1}, {"@0802000004370402", 1}, {"@1f000000000a0002", 1}, {"@1f00000002540c02", 1}, {"@1f01000000270002", 1}, {"@1f01000002550c02", 1}, {"@1f02000000280002", 1}, {"@1f02000002560c02", 1}, {"@1f03000002570c02", 1}, {"@21000000000b0002", 1}, {"@2101000000180002", 1}, {"@2102000000290002", 1}, {"@21030000002a0002", 1}, {"@2104000002520002", 1}, {"@21050000025a0002", 1}, {"@2105010003630002", 1}, {"@22400000002b0002", 1}, {"@22800000002c0002", 1}, {"@2281000002510002", 1}, {"@3200000000300002", 1}, {"@3340000000320002", 1}, {"@3480000000310002", 1}, {"@3480000002580002", 1}, {"@3480000003791502", 1}, {"@34c0000002530002", 1}, {"@34c0000104a81d02", 1}, {"@34c0000104cb1d02", 1} } },
+	{"00040000001A9200", { {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0001000000350102", 1}, {"@0002000000360102", 1}, {"@0003000000370102", 1}, {"@0004000002620102", 1}, {"@0005000000390102", 1}, {"@0007000002630102", 1}, {"@0008000002640102", 1}, {"@0009000002650102", 1}, {"@000a000000380102", 1}, {"@0013000002660102", 1}, {"@0014000002670102", 1}, {"@0017000002680102", 1}, {"@01810000024b0502", 1}, {"@01810100023f0502", 1}, {"@0182000002400502", 1}, {"@0183000002420502", 1}, {"@01840000024d0502", 1}, {"@0188000002410502", 1}, {"@018a000002450502", 1}, {"@018b000002460502", 1}, {"@018c000002430502", 1}, {"@018d0000024c0502", 1}, {"@018e000002490502", 1}, {"@0192000002470502", 1}, {"@0193000002480502", 1}, {"@01940000024a0502", 1}, {"@01960000024e0502", 1}, {"@01c1000002440502", 1}, {"@06400100001e0002", 1}, {"@06420000035f1102", 1}, {"@08000100003e0402", 1}, {"@08000100025f0402", 1}, {"@08000200003f0402", 1}, {"@0800020002600402", 1}, {"@0800030000400402", 1}, {"@0800030002610402", 1}, {"@08010000025d0402", 1}, {"@08020000025e0402", 1} } },
+	{"00040000001AF800", { {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0001000000350102", 1}, {"@0002000000360102", 1}, {"@0003000000370102", 1}, {"@0004000002620102", 1}, {"@0005000000390102", 1}, {"@0007000002630102", 1}, {"@0008000002640102", 1}, {"@0009000002650102", 1}, {"@000a000000380102", 1}, {"@0013000002660102", 1}, {"@0014000002670102", 1}, {"@0017000002680102", 1}, {"@01810000024b0502", 1}, {"@01810100023f0502", 1}, {"@0182000002400502", 1}, {"@0183000002420502", 1}, {"@01840000024d0502", 1}, {"@0188000002410502", 1}, {"@018a000002450502", 1}, {"@018b000002460502", 1}, {"@018c000002430502", 1}, {"@018d0000024c0502", 1}, {"@018e000002490502", 1}, {"@0192000002470502", 1}, {"@0193000002480502", 1}, {"@01940000024a0502", 1}, {"@01960000024e0502", 1}, {"@01c1000002440502", 1}, {"@06400100001e0002", 1}, {"@06420000035f1102", 1}, {"@08000100003e0402", 1}, {"@08000100025f0402", 1}, {"@08000200003f0402", 1}, {"@0800020002600402", 1}, {"@0800030000400402", 1}, {"@0800030002610402", 1}, {"@08010000025d0402", 1}, {"@08020000025e0402", 1} } },
+	{"00040000001AFA00", { {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0001000000350102", 1}, {"@0002000000360102", 1}, {"@0003000000370102", 1}, {"@0004000002620102", 1}, {"@0005000000390102", 1}, {"@0007000002630102", 1}, {"@0008000002640102", 1}, {"@0009000002650102", 1}, {"@000a000000380102", 1}, {"@0013000002660102", 1}, {"@0014000002670102", 1}, {"@0017000002680102", 1}, {"@01810000024b0502", 1}, {"@01810100023f0502", 1}, {"@0182000002400502", 1}, {"@0183000002420502", 1}, {"@01840000024d0502", 1}, {"@0188000002410502", 1}, {"@018a000002450502", 1}, {"@018b000002460502", 1}, {"@018c000002430502", 1}, {"@018d0000024c0502", 1}, {"@018e000002490502", 1}, {"@0192000002470502", 1}, {"@0193000002480502", 1}, {"@01940000024a0502", 1}, {"@01960000024e0502", 1}, {"@01c1000002440502", 1}, {"@06400100001e0002", 1}, {"@06420000035f1102", 1}, {"@08000100003e0402", 1}, {"@08000100025f0402", 1}, {"@08000200003f0402", 1}, {"@0800020002600402", 1}, {"@0800030000400402", 1}, {"@0800030002610402", 1}, {"@08010000025d0402", 1}, {"@08020000025e0402", 1} } },
+	{"00040000001C5900", { {"@0000000000340102", 1}, {"@00000000003c0102", 1}, {"@00000000003d0102", 1}, {"@0001000000350102", 1}, {"@0002000000360102", 1}, {"@0003000000370102", 1}, {"@0004000002620102", 1}, {"@0005000000390102", 1}, {"@0007000002630102", 1}, {"@0008000002640102", 1}, {"@0009000002650102", 1}, {"@000a000000380102", 1}, {"@0013000002660102", 1}, {"@0014000002670102", 1}, {"@0017000002680102", 1}, {"@01810000024b0502", 1}, {"@01810100023f0502", 1}, {"@0182000002400502", 1}, {"@0183000002420502", 1}, {"@01840000024d0502", 1}, {"@0188000002410502", 1}, {"@018a000002450502", 1}, {"@018b000002460502", 1}, {"@018c000002430502", 1}, {"@018d0000024c0502", 1}, {"@018e000002490502", 1}, {"@0192000002470502", 1}, {"@0193000002480502", 1}, {"@01940000024a0502", 1}, {"@01960000024e0502", 1}, {"@01c1000002440502", 1}, {"@06400100001e0002", 1}, {"@06420000035f1102", 1}, {"@08000100003e0402", 1}, {"@08000100025f0402", 1}, {"@08000200003f0402", 1}, {"@0800020002600402", 1}, {"@0800030000400402", 1}, {"@0800030002610402", 1}, {"@08010000025d0402", 1}, {"@08020000025e0402", 1} } },
+	{"00040000001CB100", { {"@0000000003710102", 1}, {"@0002000003720102", 1}, {"@0005000003730102", 1}, {"@000a000000380102", 1} } },
+	{"00040000001CB200", { {"@0000000003710102", 1}, {"@0002000003720102", 1}, {"@0005000003730102", 1}, {"@000a000000380102", 1} } },
+	{"0004000000086300", { {"@0100000000040002", 1}, {"@01000000034b0902", 1}, {"@01000000034c0902", 1}, {"@01000000034d0902", 1}, {"@01000000034e0902", 1}, {"@01000000034f0902", 1}, {"@0100000003530902", 1}, {"@0100000003540902", 1}, {"@01000000037c0002", 1}, {"@0100000003990902", 1}, {"@0100000004180902", 1}, {"@0100010000160002", 1}, {"@0100010003500902", 1}, {"@01010000000e0002", 1}, {"@0101000003520902", 1}, {"@0101000003560902", 1}, {"@0101000004190902", 1}, {"@0101010000170002", 1}, {"@0101030004140902", 1}, {"@01020100001b0002", 1}, {"@01020100041a0902", 1}, {"@01030000024f0902", 1}, {"@0140000003550902", 1}, {"@01410000035c0902", 1}, {"@0180000000080002", 1}, {"@01810000024b0502", 1}, {"@01810000037d0002", 1}, {"@0181000100440502", 1}, {"@0181000101d40502", 1}, {"@01810100023f0502", 1}, {"@0181010100b40502", 1}, {"@01810201011a0502", 1}, {"@0181030101700502", 1}, {"@0181040103aa0502", 1}, {"@0181050103bf0502", 1}, {"@0182000002400502", 1}, {"@0182000100a80502", 1}, {"@0182000101d80502", 1}, {"@0182000103b20502", 1}, {"@0182010100460502", 1}, {"@0183000002420502", 1}, {"@0183000100450502", 1}, {"@01830101010e0502", 1}, {"@0183020103a80502", 1}, {"@0183030103be0502", 1}, {"@01840000024d0502", 1}, {"@0184050103a90502", 1}, {"@01850001004b0502", 1}, {"@0185020101170502", 1}, {"@0185040101790502", 1}, {"@0186010100af0502", 1}, {"@0186030101750502", 1}, {"@0187000100470502", 1}, {"@0187000103b00502", 1}, {"@0188000002410502", 1}, {"@0188000101120502", 1}, {"@0188000103af0502", 1}, {"@0189000100ab0502", 1}, {"@0189010103b10502", 1}, {"@018a000002450502", 1}, {"@018a000100a90502", 1}, {"@018b000002460502", 1}, {"@018b000101150502", 1}, {"@018c000002430502", 1}, {"@018c0001004c0502", 1}, {"@018c010101180502", 1}, {"@018d0000024c0502", 1}, {"@018d0001010c0502", 1}, {"@018e000002490502", 1}, {"@018e000100490502", 1}, {"@018e010101780502", 1}, {"@018f000100b30502", 1}, {"@018f010101190502", 1}, {"@0190000101710502", 1}, {"@01910001004e0502", 1}, {"@0192000002470502", 1}, {"@01920001010d0502", 1}, {"@0192000103ad0502", 1}, {"@0193000002480502", 1}, {"@0193000101740502", 1}, {"@0193000103ae0502", 1}, {"@01940000024a0502", 1}, {"@0194000100aa0502", 1}, {"@0194000103b60502", 1}, {"@0195000100b00502", 1}, {"@01960000024e0502", 1}, {"@0196000100480502", 1}, {"@0197000101770502", 1}, {"@0198000100b10502", 1}, {"@0199000101160502", 1}, {"@019a000100b70502", 1}, {"@019b000100b60502", 1}, {"@019c000101730502", 1}, {"@019d000100ac0502", 1}, {"@019e000100ad0502", 1}, {"@019f000101110502", 1}, {"@01a00001010f0502", 1}, {"@01a1000101100502", 1}, {"@01a20001017d0502", 1}, {"@01a2000103b90502", 1}, {"@01a30001004a0502", 1}, {"@01a40001004d0502", 1}, {"@01a5000101720502", 1}, {"@01a6000100500502", 1}, {"@01a6000103b70502", 1}, {"@01a7000101140502", 1}, {"@01a80001004f0502", 1}, {"@01a80101017e0502", 1}, {"@01a9000101760502", 1}, {"@01aa000100530502", 1}, {"@01ab0001017c0502", 1}, {"@01ac0001017f0502", 1}, {"@01ad000100b80502", 1}, {"@01ae0001011b0502", 1}, {"@01af0001011c0502", 1}, {"@01b0000100520502", 1}, {"@01b1000100b20502", 1}, {"@01b10101017b0502", 1}, {"@01b3000100b50502", 1}, {"@01b4000101130502", 1}, {"@01b5000100510502", 1}, {"@01b6000100ae0502", 1}, {"@01c1000002440502", 1}, {"@01c1000100540502", 1}, {"@01c10101017a0502", 1}, {"@01c1020103bb0502", 1}, {"@0200000100a10502", 1}, {"@02010001016a0502", 1}, {"@0202000101030502", 1}, {"@02030001019a0502", 1}, {"@0206000103120502", 1}, {"@0208000100960502", 1}, {"@02090001019f0502", 1}, {"@0214000100e40502", 1}, {"@0215000101820502", 1}, {"@0216000100570502", 1}, {"@0217000101b30502", 1}, {"@02190001007e0502", 1}, {"@021a000100da0502", 1}, {"@021b000100800502", 1}, {"@021c000102f70502", 1}, {"@021d000101cd0502", 1}, {"@021e000101230502", 1}, {"@021f000103170502", 1}, {"@0220000100fd0502", 1}, {"@02210001013c0502", 1}, {"@0222000101440502", 1}, {"@022d000100f20502", 1}, {"@022e000101d30502", 1}, {"@022f0001011e0502", 1}, {"@0230000101d20502", 1}, {"@02310001006a0502", 1}, {"@0232000102ea0502", 1}, {"@0233000103060502", 1}, {"@0235000100840502", 1}, {"@0238000102f80502", 1}, {"@023c000100bd0502", 1}, {"@023d000101b50502", 1}, {"@023e000100d10502", 1}, {"@023f000101660502", 1}, {"@024a000101d10502", 1}, {"@024b000101260502", 1}, {"@024d000102f60502", 1}, {"@024f000100810502", 1}, {"@0251000100c10502", 1}, {"@0252000100fe0502", 1}, {"@025d000100550502", 1}, {"@025e000101250502", 1}, {"@025f000101c50502", 1}, {"@025f000101d70502", 1}, {"@0260000100d20502", 1}, {"@0261000100650502", 1}, {"@0262000101370502", 1}, {"@0263000100750502", 1}, {"@0264000101ac0502", 1}, {"@0265000101540502", 1}, {"@0266000100680502", 1}, {"@0267000101080502", 1}, {"@02680001007d0502", 1}, {"@02690001011f0502", 1}, {"@026a000101460502", 1}, {"@026b000100e90502", 1}, {"@026c000100c30502", 1}, {"@026d0001013f0502", 1}, {"@026e000100ba0502", 1}, {"@026f000101900502", 1}, {"@0270000100ff0502", 1}, {"@02710001019b0502", 1}, {"@0272000101860502", 1}, {"@027d000100630502", 1}, {"@027e000101690502", 1}, {"@027f000100b90502", 1}, {"@0280000100830502", 1}, {"@0281000101200502", 1}, {"@0282000101810502", 1}, {"@0282000101d60502", 1}, {"@0283000100c70502", 1}, {"@0284000102fe0502", 1}, {"@0286000103130502", 1}, {"@02870001005a0502", 1}, {"@028a000102e90502", 1}, {"@028b000100e30502", 1}, {"@028c0001013e0502", 1}, {"@028d000101bd0502", 1}, {"@028e0001019e0502", 1}, {"@028f0101031a0502", 1}, {"@0299000100950502", 1}, {"@029a000100ee0502", 1}, {"@029b000100cb0502", 1}, {"@029e0001013d0502", 1}, {"@02a2000101ba0502", 1}, {"@02a3000102ff0502", 1}, {"@02a4000100720502", 1}, {"@02a50001018c0502", 1}, {"@02a6000101240502", 1}, {"@02b1000100690502", 1}, {"@02b2000100c40502", 1}, {"@02b70001030f0502", 1}, {"@02b80001019c0502", 1}, {"@02c3000100dc0502", 1}, {"@02c4000100670502", 1}, {"@02c5000103080502", 1}, {"@02c7000101220502", 1}, {"@02c9000100cd0502", 1}, {"@02ca000101ca0502", 1}, {"@02cb000101360502", 1}, {"@02d6000100560502", 1}, {"@02d7000101300502", 1}, {"@02d8000100e20502", 1}, {"@02d9000101c80502", 1}, {"@02da000101330502", 1}, {"@02db0001005e0502", 1}, {"@02dc000100be0502", 1}, {"@02dd000100ea0502", 1}, {"@02de0001009c0502", 1}, {"@02df000101910502", 1}, {"@02e00101031d0502", 1}, {"@02ea000101800502", 1}, {"@02ea000101d50502", 1}, {"@02eb000100de0502", 1}, {"@02ec000101c40502", 1}, {"@02ed0001015a0502", 1}, {"@02ee000101990502", 1}, {"@02ef000100580502", 1}, {"@02f0000100a70502", 1}, {"@02f1000101450502", 1}, {"@02f2000100cc0502", 1}, {"@02f3000102f90502", 1}, {"@02f4000103050502", 1}, {"@02f8000101380502", 1}, {"@02f9000101020502", 1}, {"@02fa000100970502", 1}, {"@02fb000100900502", 1}, {"@02fc0001018f0502", 1}, {"@0307000100640502", 1}, {"@03080001014d0502", 1}, {"@0309000100c60502", 1}, {"@030a000101c70502", 1}, {"@030b000100790502", 1}, {"@030c000101b80502", 1}, {"@030d000101840502", 1}, {"@030e0001012f0502", 1}, {"@030f0001016d0502", 1}, {"@0310000100f80502", 1}, {"@0311000100d60502", 1}, {"@0312000103090502", 1}, {"@0313000101210502", 1}, {"@0314000102f40502", 1}, {"@0316000101c00502", 1}, {"@0317000100a60502", 1}, {"@03180001006c0502", 1}, {"@0323000100760502", 1}, {"@0324000101890502", 1}, {"@03250001010a0502", 1}, {"@0326000101390502", 1}, {"@0327000101c30502", 1}, {"@0328000102eb0502", 1}, {"@03290001009d0502", 1}, {"@032a000103070502", 1}, {"@032c000101480502", 1}, {"@032d000100bc0502", 1}, {"@032e0101031c0502", 1}, {"@03380001011d0502", 1}, {"@0339000101b10502", 1}, {"@033a000101cc0502", 1}, {"@033b000100fa0502", 1}, {"@033c000101000502", 1}, {"@033d0001013a0502", 1}, {"@033e000101a20502", 1}, {"@033f0001008f0502", 1}, {"@03410001030e0502", 1}, {"@0342000101280502", 1}, {"@0343000102ef0502", 1}, {"@0344000100c50502", 1}, {"@03450001005f0502", 1}, {"@0347000103020502", 1}, {"@03480001006b0502", 1}, {"@03490001018d0502", 1}, {"@034a000101430502", 1}, {"@034b0001009f0502", 1}, {"@0356000101350502", 1}, {"@0357000100eb0502", 1}, {"@0358000102fa0502", 1}, {"@035a000100850502", 1}, {"@035c000101290502", 1}, {"@035d000100c90502", 1}, {"@035e0001018e0502", 1}, {"@0369000100d30502", 1}, {"@036a0001019d0502", 1}, {"@036b0001018b0502", 1}, {"@036d000103040502", 1}, {"@036e000102fb0502", 1}, {"@03700001015d0502", 1}, {"@03710001005c0502", 1}, {"@03720001010b0502", 1}, {"@0373000101340502", 1}, {"@0374010103190502", 1}, {"@037e000101560502", 1}, {"@037f000101aa0502", 1}, {"@0380000101870502", 1}, {"@0381000100d50502", 1}, {"@03820001016b0502", 1}, {"@03830001009b0502", 1}, {"@0384000100860502", 1}, {"@0385000101060502", 1}, {"@0390000101850502", 1}, {"@0392000101270502", 1}, {"@0393000100a00502", 1}, {"@0394000100890502", 1}, {"@0395000102fc0502", 1}, {"@0398000100bf0502", 1}, {"@0399000101c20502", 1}, {"@03a40001014f0502", 1}, {"@03a50001015b0502", 1}, {"@03a6000100c80502", 1}, {"@03a7000101a10502", 1}, {"@03a8000100910502", 1}, {"@03a9000100710502", 1}, {"@03aa000100e60502", 1}, {"@03ab000103160502", 1}, {"@03ac000101880502", 1}, {"@03ad000101b20502", 1}, {"@03ae000100870502", 1}, {"@03af0001012c0502", 1}, {"@03b0000101a90502", 1}, {"@03b1000100f00502", 1}, {"@03bc0001008a0502", 1}, {"@03bd000100f90502", 1}, {"@03be000101980502", 1}, {"@03bf000101bc0502", 1}, {"@03c0000103100502", 1}, {"@03c1000100bb0502", 1}, {"@03c40001012b0502", 1}, {"@03c50001015c0502", 1}, {"@03c6000100930502", 1}, {"@03d1000100c20502", 1}, {"@03d2000100e50502", 1}, {"@03d3000102f30502", 1}, {"@03d6000101570502", 1}, {"@03d7000101b40502", 1}, {"@03d9000101a50502", 1}, {"@03da000101510502", 1}, {"@03db0001006d0502", 1}, {"@03e6000100ec0502", 1}, {"@03e70001012a0502", 1}, {"@03e8000102f50502", 1}, {"@03ea0001030b0502", 1}, {"@03ec000101830502", 1}, {"@03ed000101a30502", 1}, {"@03ee0001008b0502", 1}, {"@03fa000100d00502", 1}, {"@03fb000101cf0502", 1}, {"@03fc000101470502", 1}, {"@03fd000101580502", 1}, {"@03fe000101a40502", 1}, {"@03ff000100f40502", 1}, {"@04000001006f0502", 1}, {"@0401000100660502", 1}, {"@040c000101590502", 1}, {"@040d000100780502", 1}, {"@040e000100880502", 1}, {"@040f000101500502", 1}, {"@04100001007f0502", 1}, {"@0411000101ab0502", 1}, {"@04140001030a0502", 1}, {"@0415000101bb0502", 1}, {"@0416000100fb0502", 1}, {"@0418000100d80502", 1}, {"@041a000100e00502", 1}, {"@041b000100f10502", 1}, {"@041c000101410502", 1}, {"@041d0001018a0502", 1}, {"@041e0001015f0502", 1}, {"@0429000100700502", 1}, {"@042a0001012d0502", 1}, {"@042b000101af0502", 1}, {"@0436000101940502", 1}, {"@0437000101050502", 1}, {"@0438000103000502", 1}, {"@0439000103110502", 1}, {"@043b000103030502", 1}, {"@043c000101cb0502", 1}, {"@043d0001007c0502", 1}, {"@043e000101490502", 1}, {"@043f000101550502", 1}, {"@0440000100ca0502", 1}, {"@044b0001016c0502", 1}, {"@044c0001008e0502", 1}, {"@044d000101930502", 1}, {"@044e000103150502", 1}, {"@0450000100cf0502", 1}, {"@04510001015e0502", 1}, {"@0452000100730502", 1}, {"@0453000101040502", 1}, {"@0454000101ae0502", 1}, {"@045f000101a80502", 1}, {"@0460000100a50502", 1}, {"@0461000101610502", 1}, {"@0462000100f60502", 1}, {"@0463000101310502", 1}, {"@0464000100c00502", 1}, {"@04650001006e0502", 1}, {"@0468000102f20502", 1}, {"@0469000101640502", 1}, {"@046a000101d00502", 1}, {"@046b000101970502", 1}, {"@046c0001008c0502", 1}, {"@046d000100f30502", 1}, {"@0478000101630502", 1}, {"@0479000100920502", 1}, {"@047a000100600502", 1}, {"@047b000100f50502", 1}, {"@047c000101a00502", 1}, {"@047d0001012e0502", 1}, {"@04800001008d0502", 1}, {"@0481000102f10502", 1}, {"@0482000102fd0502", 1}, {"@0483000101b00502", 1}, {"@04850001014c0502", 1}, {"@0486000100fc0502", 1}, {"@0487000101bf0502", 1}, {"@0488000100980502", 1}, {"@0489000100ef0502", 1}, {"@04940001009a0502", 1}, {"@0495000101920502", 1}, {"@0496000100d90502", 1}, {"@04970001007a0502", 1}, {"@04980001014a0502", 1}, {"@0499000100df0502", 1}, {"@049a0001014e0502", 1}, {"@049b000100610502", 1}, {"@049c000101400502", 1}, {"@049d000100ed0502", 1}, {"@049e000101b70502", 1}, {"@049f000103010502", 1}, {"@04a00001016e0502", 1}, {"@04a10001016f0502", 1}, {"@04a2000102e80502", 1}, {"@04a3000101c90502", 1}, {"@04a4000100d40502", 1}, {"@04a5000100740502", 1}, {"@04a6000100a30502", 1}, {"@04a7000101a60502", 1}, {"@04a80101031e0502", 1}, {"@04b2000101b90502", 1}, {"@04b3000100dd0502", 1}, {"@04b40001030c0502", 1}, {"@04b6000102ec0502", 1}, {"@04b9000101600502", 1}, {"@04ba0001005d0502", 1}, {"@04c5000101010502", 1}, {"@04c6000101670502", 1}, {"@04c7000100940502", 1}, {"@04c8000102ed0502", 1}, {"@04c90001030d0502", 1}, {"@04cc000100a40502", 1}, {"@04cd000101520502", 1}, {"@04ce000100db0502", 1}, {"@04cf000100e10502", 1}, {"@04d0000101960502", 1}, {"@04d10001009e0502", 1}, {"@04d2000101a70502", 1}, {"@04d30101031b0502", 1}, {"@04dd000100a20502", 1}, {"@04de000100ce0502", 1}, {"@04df000100e80502", 1}, {"@04e0000100f70502", 1}, {"@04e1000101be0502", 1}, {"@04e2000101090502", 1}, {"@04e3000101650502", 1}, {"@04e4000101b60502", 1}, {"@04e5000101ad0502", 1}, {"@04e6000100820502", 1}, {"@04e7000101320502", 1}, {"@04e8000101ce0502", 1}, {"@04ea000103180502", 1}, {"@04eb000102f00502", 1}, {"@04ec000100770502", 1}, {"@04ed000100620502", 1}, {"@04ee0001014b0502", 1}, {"@04ef0001013b0502", 1}, {"@04fa000101680502", 1}, {"@04fb000101c60502", 1}, {"@04fc000102ee0502", 1}, {"@04fd0001007b0502", 1}, {"@04fe000100590502", 1}, {"@04ff000101620502", 1}, {"@0500000100e70502", 1}, {"@050b000100990502", 1}, {"@050c000101c10502", 1}, {"@050d000101420502", 1}, {"@050e000100d70502", 1}, {"@050f000103140502", 1}, {"@0510000101070502", 1}, {"@0511000101950502", 1}, {"@0513000102e70502", 1}, {"@0514000101530502", 1}, {"@05150001005b0502", 1}, {"@08000100003e0402", 1}, {"@08000100025f0402", 1}, {"@0800010003690402", 1}, {"@0800010003820002", 1}, {"@0800010004150402", 1}, {"@08000200003f0402", 1}, {"@0800020002600402", 1}, {"@08000200036a0402", 1}, {"@0800030000400402", 1}, {"@0800030002610402", 1}, {"@08000300036b0402", 1}, {"@08010000025d0402", 1}, {"@0801000004360402", 1}, {"@08020000025e0402", 1}, {"@0802000004370402", 1}, {"@0a12000103c90502", 1}, {"@0a1c000103d30502", 1}, {"@3500010002e10f02", 1}, {"@3500020002e20f02", 1}, {"@3501000002e30f02", 1}, {"@3502010002e40f02", 1}, {"@3503010002e50f02", 1}, {"@3504010002e60f02", 1} } },
+	{"0004000000086400", { {"@0100000000040002", 1}, {"@01000000034b0902", 1}, {"@01000000034c0902", 1}, {"@01000000034d0902", 1}, {"@01000000034e0902", 1}, {"@01000000034f0902", 1}, {"@0100000003530902", 1}, {"@0100000003540902", 1}, {"@01000000037c0002", 1}, {"@0100000003990902", 1}, {"@0100000004180902", 1}, {"@0100010000160002", 1}, {"@0100010003500902", 1}, {"@01010000000e0002", 1}, {"@0101000003520902", 1}, {"@0101000003560902", 1}, {"@0101000004190902", 1}, {"@0101010000170002", 1}, {"@0101030004140902", 1}, {"@01020100001b0002", 1}, {"@01020100041a0902", 1}, {"@01030000024f0902", 1}, {"@0140000003550902", 1}, {"@01410000035c0902", 1}, {"@0180000000080002", 1}, {"@01810000024b0502", 1}, {"@01810000037d0002", 1}, {"@0181000100440502", 1}, {"@0181000101d40502", 1}, {"@01810100023f0502", 1}, {"@0181010100b40502", 1}, {"@01810201011a0502", 1}, {"@0181030101700502", 1}, {"@0181040103aa0502", 1}, {"@0181050103bf0502", 1}, {"@0182000002400502", 1}, {"@0182000100a80502", 1}, {"@0182000101d80502", 1}, {"@0182000103b20502", 1}, {"@0182010100460502", 1}, {"@0183000002420502", 1}, {"@0183000100450502", 1}, {"@01830101010e0502", 1}, {"@0183020103a80502", 1}, {"@0183030103be0502", 1}, {"@01840000024d0502", 1}, {"@0184050103a90502", 1}, {"@01850001004b0502", 1}, {"@0185020101170502", 1}, {"@0185040101790502", 1}, {"@0186010100af0502", 1}, {"@0186030101750502", 1}, {"@0187000100470502", 1}, {"@0187000103b00502", 1}, {"@0188000002410502", 1}, {"@0188000101120502", 1}, {"@0188000103af0502", 1}, {"@0189000100ab0502", 1}, {"@0189010103b10502", 1}, {"@018a000002450502", 1}, {"@018a000100a90502", 1}, {"@018b000002460502", 1}, {"@018b000101150502", 1}, {"@018c000002430502", 1}, {"@018c0001004c0502", 1}, {"@018c010101180502", 1}, {"@018d0000024c0502", 1}, {"@018d0001010c0502", 1}, {"@018e000002490502", 1}, {"@018e000100490502", 1}, {"@018e010101780502", 1}, {"@018f000100b30502", 1}, {"@018f010101190502", 1}, {"@0190000101710502", 1}, {"@01910001004e0502", 1}, {"@0192000002470502", 1}, {"@01920001010d0502", 1}, {"@0192000103ad0502", 1}, {"@0193000002480502", 1}, {"@0193000101740502", 1}, {"@0193000103ae0502", 1}, {"@01940000024a0502", 1}, {"@0194000100aa0502", 1}, {"@0194000103b60502", 1}, {"@0195000100b00502", 1}, {"@01960000024e0502", 1}, {"@0196000100480502", 1}, {"@0197000101770502", 1}, {"@0198000100b10502", 1}, {"@0199000101160502", 1}, {"@019a000100b70502", 1}, {"@019b000100b60502", 1}, {"@019c000101730502", 1}, {"@019d000100ac0502", 1}, {"@019e000100ad0502", 1}, {"@019f000101110502", 1}, {"@01a00001010f0502", 1}, {"@01a1000101100502", 1}, {"@01a20001017d0502", 1}, {"@01a2000103b90502", 1}, {"@01a30001004a0502", 1}, {"@01a40001004d0502", 1}, {"@01a5000101720502", 1}, {"@01a6000100500502", 1}, {"@01a6000103b70502", 1}, {"@01a7000101140502", 1}, {"@01a80001004f0502", 1}, {"@01a80101017e0502", 1}, {"@01a9000101760502", 1}, {"@01aa000100530502", 1}, {"@01ab0001017c0502", 1}, {"@01ac0001017f0502", 1}, {"@01ad000100b80502", 1}, {"@01ae0001011b0502", 1}, {"@01af0001011c0502", 1}, {"@01b0000100520502", 1}, {"@01b1000100b20502", 1}, {"@01b10101017b0502", 1}, {"@01b3000100b50502", 1}, {"@01b4000101130502", 1}, {"@01b5000100510502", 1}, {"@01b6000100ae0502", 1}, {"@01c1000002440502", 1}, {"@01c1000100540502", 1}, {"@01c10101017a0502", 1}, {"@01c1020103bb0502", 1}, {"@0200000100a10502", 1}, {"@02010001016a0502", 1}, {"@0202000101030502", 1}, {"@02030001019a0502", 1}, {"@0206000103120502", 1}, {"@0208000100960502", 1}, {"@02090001019f0502", 1}, {"@0214000100e40502", 1}, {"@0215000101820502", 1}, {"@0216000100570502", 1}, {"@0217000101b30502", 1}, {"@02190001007e0502", 1}, {"@021a000100da0502", 1}, {"@021b000100800502", 1}, {"@021c000102f70502", 1}, {"@021d000101cd0502", 1}, {"@021e000101230502", 1}, {"@021f000103170502", 1}, {"@0220000100fd0502", 1}, {"@02210001013c0502", 1}, {"@0222000101440502", 1}, {"@022d000100f20502", 1}, {"@022e000101d30502", 1}, {"@022f0001011e0502", 1}, {"@0230000101d20502", 1}, {"@02310001006a0502", 1}, {"@0232000102ea0502", 1}, {"@0233000103060502", 1}, {"@0235000100840502", 1}, {"@0238000102f80502", 1}, {"@023c000100bd0502", 1}, {"@023d000101b50502", 1}, {"@023e000100d10502", 1}, {"@023f000101660502", 1}, {"@024a000101d10502", 1}, {"@024b000101260502", 1}, {"@024d000102f60502", 1}, {"@024f000100810502", 1}, {"@0251000100c10502", 1}, {"@0252000100fe0502", 1}, {"@025d000100550502", 1}, {"@025e000101250502", 1}, {"@025f000101c50502", 1}, {"@025f000101d70502", 1}, {"@0260000100d20502", 1}, {"@0261000100650502", 1}, {"@0262000101370502", 1}, {"@0263000100750502", 1}, {"@0264000101ac0502", 1}, {"@0265000101540502", 1}, {"@0266000100680502", 1}, {"@0267000101080502", 1}, {"@02680001007d0502", 1}, {"@02690001011f0502", 1}, {"@026a000101460502", 1}, {"@026b000100e90502", 1}, {"@026c000100c30502", 1}, {"@026d0001013f0502", 1}, {"@026e000100ba0502", 1}, {"@026f000101900502", 1}, {"@0270000100ff0502", 1}, {"@02710001019b0502", 1}, {"@0272000101860502", 1}, {"@027d000100630502", 1}, {"@027e000101690502", 1}, {"@027f000100b90502", 1}, {"@0280000100830502", 1}, {"@0281000101200502", 1}, {"@0282000101810502", 1}, {"@0282000101d60502", 1}, {"@0283000100c70502", 1}, {"@0284000102fe0502", 1}, {"@0286000103130502", 1}, {"@02870001005a0502", 1}, {"@028a000102e90502", 1}, {"@028b000100e30502", 1}, {"@028c0001013e0502", 1}, {"@028d000101bd0502", 1}, {"@028e0001019e0502", 1}, {"@028f0101031a0502", 1}, {"@0299000100950502", 1}, {"@029a000100ee0502", 1}, {"@029b000100cb0502", 1}, {"@029e0001013d0502", 1}, {"@02a2000101ba0502", 1}, {"@02a3000102ff0502", 1}, {"@02a4000100720502", 1}, {"@02a50001018c0502", 1}, {"@02a6000101240502", 1}, {"@02b1000100690502", 1}, {"@02b2000100c40502", 1}, {"@02b70001030f0502", 1}, {"@02b80001019c0502", 1}, {"@02c3000100dc0502", 1}, {"@02c4000100670502", 1}, {"@02c5000103080502", 1}, {"@02c7000101220502", 1}, {"@02c9000100cd0502", 1}, {"@02ca000101ca0502", 1}, {"@02cb000101360502", 1}, {"@02d6000100560502", 1}, {"@02d7000101300502", 1}, {"@02d8000100e20502", 1}, {"@02d9000101c80502", 1}, {"@02da000101330502", 1}, {"@02db0001005e0502", 1}, {"@02dc000100be0502", 1}, {"@02dd000100ea0502", 1}, {"@02de0001009c0502", 1}, {"@02df000101910502", 1}, {"@02e00101031d0502", 1}, {"@02ea000101800502", 1}, {"@02ea000101d50502", 1}, {"@02eb000100de0502", 1}, {"@02ec000101c40502", 1}, {"@02ed0001015a0502", 1}, {"@02ee000101990502", 1}, {"@02ef000100580502", 1}, {"@02f0000100a70502", 1}, {"@02f1000101450502", 1}, {"@02f2000100cc0502", 1}, {"@02f3000102f90502", 1}, {"@02f4000103050502", 1}, {"@02f8000101380502", 1}, {"@02f9000101020502", 1}, {"@02fa000100970502", 1}, {"@02fb000100900502", 1}, {"@02fc0001018f0502", 1}, {"@0307000100640502", 1}, {"@03080001014d0502", 1}, {"@0309000100c60502", 1}, {"@030a000101c70502", 1}, {"@030b000100790502", 1}, {"@030c000101b80502", 1}, {"@030d000101840502", 1}, {"@030e0001012f0502", 1}, {"@030f0001016d0502", 1}, {"@0310000100f80502", 1}, {"@0311000100d60502", 1}, {"@0312000103090502", 1}, {"@0313000101210502", 1}, {"@0314000102f40502", 1}, {"@0316000101c00502", 1}, {"@0317000100a60502", 1}, {"@03180001006c0502", 1}, {"@0323000100760502", 1}, {"@0324000101890502", 1}, {"@03250001010a0502", 1}, {"@0326000101390502", 1}, {"@0327000101c30502", 1}, {"@0328000102eb0502", 1}, {"@03290001009d0502", 1}, {"@032a000103070502", 1}, {"@032c000101480502", 1}, {"@032d000100bc0502", 1}, {"@032e0101031c0502", 1}, {"@03380001011d0502", 1}, {"@0339000101b10502", 1}, {"@033a000101cc0502", 1}, {"@033b000100fa0502", 1}, {"@033c000101000502", 1}, {"@033d0001013a0502", 1}, {"@033e000101a20502", 1}, {"@033f0001008f0502", 1}, {"@03410001030e0502", 1}, {"@0342000101280502", 1}, {"@0343000102ef0502", 1}, {"@0344000100c50502", 1}, {"@03450001005f0502", 1}, {"@0347000103020502", 1}, {"@03480001006b0502", 1}, {"@03490001018d0502", 1}, {"@034a000101430502", 1}, {"@034b0001009f0502", 1}, {"@0356000101350502", 1}, {"@0357000100eb0502", 1}, {"@0358000102fa0502", 1}, {"@035a000100850502", 1}, {"@035c000101290502", 1}, {"@035d000100c90502", 1}, {"@035e0001018e0502", 1}, {"@0369000100d30502", 1}, {"@036a0001019d0502", 1}, {"@036b0001018b0502", 1}, {"@036d000103040502", 1}, {"@036e000102fb0502", 1}, {"@03700001015d0502", 1}, {"@03710001005c0502", 1}, {"@03720001010b0502", 1}, {"@0373000101340502", 1}, {"@0374010103190502", 1}, {"@037e000101560502", 1}, {"@037f000101aa0502", 1}, {"@0380000101870502", 1}, {"@0381000100d50502", 1}, {"@03820001016b0502", 1}, {"@03830001009b0502", 1}, {"@0384000100860502", 1}, {"@0385000101060502", 1}, {"@0390000101850502", 1}, {"@0392000101270502", 1}, {"@0393000100a00502", 1}, {"@0394000100890502", 1}, {"@0395000102fc0502", 1}, {"@0398000100bf0502", 1}, {"@0399000101c20502", 1}, {"@03a40001014f0502", 1}, {"@03a50001015b0502", 1}, {"@03a6000100c80502", 1}, {"@03a7000101a10502", 1}, {"@03a8000100910502", 1}, {"@03a9000100710502", 1}, {"@03aa000100e60502", 1}, {"@03ab000103160502", 1}, {"@03ac000101880502", 1}, {"@03ad000101b20502", 1}, {"@03ae000100870502", 1}, {"@03af0001012c0502", 1}, {"@03b0000101a90502", 1}, {"@03b1000100f00502", 1}, {"@03bc0001008a0502", 1}, {"@03bd000100f90502", 1}, {"@03be000101980502", 1}, {"@03bf000101bc0502", 1}, {"@03c0000103100502", 1}, {"@03c1000100bb0502", 1}, {"@03c40001012b0502", 1}, {"@03c50001015c0502", 1}, {"@03c6000100930502", 1}, {"@03d1000100c20502", 1}, {"@03d2000100e50502", 1}, {"@03d3000102f30502", 1}, {"@03d6000101570502", 1}, {"@03d7000101b40502", 1}, {"@03d9000101a50502", 1}, {"@03da000101510502", 1}, {"@03db0001006d0502", 1}, {"@03e6000100ec0502", 1}, {"@03e70001012a0502", 1}, {"@03e8000102f50502", 1}, {"@03ea0001030b0502", 1}, {"@03ec000101830502", 1}, {"@03ed000101a30502", 1}, {"@03ee0001008b0502", 1}, {"@03fa000100d00502", 1}, {"@03fb000101cf0502", 1}, {"@03fc000101470502", 1}, {"@03fd000101580502", 1}, {"@03fe000101a40502", 1}, {"@03ff000100f40502", 1}, {"@04000001006f0502", 1}, {"@0401000100660502", 1}, {"@040c000101590502", 1}, {"@040d000100780502", 1}, {"@040e000100880502", 1}, {"@040f000101500502", 1}, {"@04100001007f0502", 1}, {"@0411000101ab0502", 1}, {"@04140001030a0502", 1}, {"@0415000101bb0502", 1}, {"@0416000100fb0502", 1}, {"@0418000100d80502", 1}, {"@041a000100e00502", 1}, {"@041b000100f10502", 1}, {"@041c000101410502", 1}, {"@041d0001018a0502", 1}, {"@041e0001015f0502", 1}, {"@0429000100700502", 1}, {"@042a0001012d0502", 1}, {"@042b000101af0502", 1}, {"@0436000101940502", 1}, {"@0437000101050502", 1}, {"@0438000103000502", 1}, {"@0439000103110502", 1}, {"@043b000103030502", 1}, {"@043c000101cb0502", 1}, {"@043d0001007c0502", 1}, {"@043e000101490502", 1}, {"@043f000101550502", 1}, {"@0440000100ca0502", 1}, {"@044b0001016c0502", 1}, {"@044c0001008e0502", 1}, {"@044d000101930502", 1}, {"@044e000103150502", 1}, {"@0450000100cf0502", 1}, {"@04510001015e0502", 1}, {"@0452000100730502", 1}, {"@0453000101040502", 1}, {"@0454000101ae0502", 1}, {"@045f000101a80502", 1}, {"@0460000100a50502", 1}, {"@0461000101610502", 1}, {"@0462000100f60502", 1}, {"@0463000101310502", 1}, {"@0464000100c00502", 1}, {"@04650001006e0502", 1}, {"@0468000102f20502", 1}, {"@0469000101640502", 1}, {"@046a000101d00502", 1}, {"@046b000101970502", 1}, {"@046c0001008c0502", 1}, {"@046d000100f30502", 1}, {"@0478000101630502", 1}, {"@0479000100920502", 1}, {"@047a000100600502", 1}, {"@047b000100f50502", 1}, {"@047c000101a00502", 1}, {"@047d0001012e0502", 1}, {"@04800001008d0502", 1}, {"@0481000102f10502", 1}, {"@0482000102fd0502", 1}, {"@0483000101b00502", 1}, {"@04850001014c0502", 1}, {"@0486000100fc0502", 1}, {"@0487000101bf0502", 1}, {"@0488000100980502", 1}, {"@0489000100ef0502", 1}, {"@04940001009a0502", 1}, {"@0495000101920502", 1}, {"@0496000100d90502", 1}, {"@04970001007a0502", 1}, {"@04980001014a0502", 1}, {"@0499000100df0502", 1}, {"@049a0001014e0502", 1}, {"@049b000100610502", 1}, {"@049c000101400502", 1}, {"@049d000100ed0502", 1}, {"@049e000101b70502", 1}, {"@049f000103010502", 1}, {"@04a00001016e0502", 1}, {"@04a10001016f0502", 1}, {"@04a2000102e80502", 1}, {"@04a3000101c90502", 1}, {"@04a4000100d40502", 1}, {"@04a5000100740502", 1}, {"@04a6000100a30502", 1}, {"@04a7000101a60502", 1}, {"@04a80101031e0502", 1}, {"@04b2000101b90502", 1}, {"@04b3000100dd0502", 1}, {"@04b40001030c0502", 1}, {"@04b6000102ec0502", 1}, {"@04b9000101600502", 1}, {"@04ba0001005d0502", 1}, {"@04c5000101010502", 1}, {"@04c6000101670502", 1}, {"@04c7000100940502", 1}, {"@04c8000102ed0502", 1}, {"@04c90001030d0502", 1}, {"@04cc000100a40502", 1}, {"@04cd000101520502", 1}, {"@04ce000100db0502", 1}, {"@04cf000100e10502", 1}, {"@04d0000101960502", 1}, {"@04d10001009e0502", 1}, {"@04d2000101a70502", 1}, {"@04d30101031b0502", 1}, {"@04dd000100a20502", 1}, {"@04de000100ce0502", 1}, {"@04df000100e80502", 1}, {"@04e0000100f70502", 1}, {"@04e1000101be0502", 1}, {"@04e2000101090502", 1}, {"@04e3000101650502", 1}, {"@04e4000101b60502", 1}, {"@04e5000101ad0502", 1}, {"@04e6000100820502", 1}, {"@04e7000101320502", 1}, {"@04e8000101ce0502", 1}, {"@04ea000103180502", 1}, {"@04eb000102f00502", 1}, {"@04ec000100770502", 1}, {"@04ed000100620502", 1}, {"@04ee0001014b0502", 1}, {"@04ef0001013b0502", 1}, {"@04fa000101680502", 1}, {"@04fb000101c60502", 1}, {"@04fc000102ee0502", 1}, {"@04fd0001007b0502", 1}, {"@04fe000100590502", 1}, {"@04ff000101620502", 1}, {"@0500000100e70502", 1}, {"@050b000100990502", 1}, {"@050c000101c10502", 1}, {"@050d000101420502", 1}, {"@050e000100d70502", 1}, {"@050f000103140502", 1}, {"@0510000101070502", 1}, {"@0511000101950502", 1}, {"@0513000102e70502", 1}, {"@0514000101530502", 1}, {"@05150001005b0502", 1}, {"@08000100003e0402", 1}, {"@08000100025f0402", 1}, {"@0800010003690402", 1}, {"@0800010003820002", 1}, {"@0800010004150402", 1}, {"@08000200003f0402", 1}, {"@0800020002600402", 1}, {"@08000200036a0402", 1}, {"@0800030000400402", 1}, {"@0800030002610402", 1}, {"@08000300036b0402", 1}, {"@08010000025d0402", 1}, {"@0801000004360402", 1}, {"@08020000025e0402", 1}, {"@0802000004370402", 1}, {"@0a12000103c90502", 1}, {"@0a1c000103d30502", 1}, {"@3500010002e10f02", 1}, {"@3500020002e20f02", 1}, {"@3501000002e30f02", 1}, {"@3502010002e40f02", 1}, {"@3503010002e50f02", 1}, {"@3504010002e60f02", 1} } },
+	{"0004000000198E00", { {"@0100000000040002", 1}, {"@01000000034b0902", 1}, {"@01000000034c0902", 1}, {"@01000000034d0902", 1}, {"@01000000034e0902", 1}, {"@01000000034f0902", 1}, {"@0100000003530902", 1}, {"@0100000003540902", 1}, {"@01000000037c0002", 1}, {"@0100000003990902", 1}, {"@0100000004180902", 1}, {"@0100010000160002", 1}, {"@0100010003500902", 1}, {"@01010000000e0002", 1}, {"@0101000003520902", 1}, {"@0101000003560902", 1}, {"@0101000004190902", 1}, {"@0101010000170002", 1}, {"@0101030004140902", 1}, {"@01020100001b0002", 1}, {"@01020100041a0902", 1}, {"@01030000024f0902", 1}, {"@0140000003550902", 1}, {"@01410000035c0902", 1}, {"@0180000000080002", 1}, {"@01810000024b0502", 1}, {"@01810000037d0002", 1}, {"@0181000100440502", 1}, {"@0181000101d40502", 1}, {"@01810100023f0502", 1}, {"@0181010100b40502", 1}, {"@01810201011a0502", 1}, {"@0181030101700502", 1}, {"@0181040103aa0502", 1}, {"@0181050103bf0502", 1}, {"@0182000002400502", 1}, {"@0182000100a80502", 1}, {"@0182000101d80502", 1}, {"@0182000103b20502", 1}, {"@0182010100460502", 1}, {"@0183000002420502", 1}, {"@0183000100450502", 1}, {"@01830101010e0502", 1}, {"@0183020103a80502", 1}, {"@0183030103be0502", 1}, {"@01840000024d0502", 1}, {"@0184050103a90502", 1}, {"@01850001004b0502", 1}, {"@0185020101170502", 1}, {"@0185040101790502", 1}, {"@0186010100af0502", 1}, {"@0186030101750502", 1}, {"@0187000100470502", 1}, {"@0187000103b00502", 1}, {"@0188000002410502", 1}, {"@0188000101120502", 1}, {"@0188000103af0502", 1}, {"@0189000100ab0502", 1}, {"@0189010103b10502", 1}, {"@018a000002450502", 1}, {"@018a000100a90502", 1}, {"@018b000002460502", 1}, {"@018b000101150502", 1}, {"@018c000002430502", 1}, {"@018c0001004c0502", 1}, {"@018c010101180502", 1}, {"@018d0000024c0502", 1}, {"@018d0001010c0502", 1}, {"@018e000002490502", 1}, {"@018e000100490502", 1}, {"@018e010101780502", 1}, {"@018f000100b30502", 1}, {"@018f010101190502", 1}, {"@0190000101710502", 1}, {"@01910001004e0502", 1}, {"@0192000002470502", 1}, {"@01920001010d0502", 1}, {"@0192000103ad0502", 1}, {"@0193000002480502", 1}, {"@0193000101740502", 1}, {"@0193000103ae0502", 1}, {"@01940000024a0502", 1}, {"@0194000100aa0502", 1}, {"@0194000103b60502", 1}, {"@0195000100b00502", 1}, {"@01960000024e0502", 1}, {"@0196000100480502", 1}, {"@0197000101770502", 1}, {"@0198000100b10502", 1}, {"@0199000101160502", 1}, {"@019a000100b70502", 1}, {"@019b000100b60502", 1}, {"@019c000101730502", 1}, {"@019d000100ac0502", 1}, {"@019e000100ad0502", 1}, {"@019f000101110502", 1}, {"@01a00001010f0502", 1}, {"@01a1000101100502", 1}, {"@01a20001017d0502", 1}, {"@01a2000103b90502", 1}, {"@01a30001004a0502", 1}, {"@01a40001004d0502", 1}, {"@01a5000101720502", 1}, {"@01a6000100500502", 1}, {"@01a6000103b70502", 1}, {"@01a7000101140502", 1}, {"@01a80001004f0502", 1}, {"@01a80101017e0502", 1}, {"@01a9000101760502", 1}, {"@01aa000100530502", 1}, {"@01ab0001017c0502", 1}, {"@01ac0001017f0502", 1}, {"@01ad000100b80502", 1}, {"@01ae0001011b0502", 1}, {"@01af0001011c0502", 1}, {"@01b0000100520502", 1}, {"@01b1000100b20502", 1}, {"@01b10101017b0502", 1}, {"@01b3000100b50502", 1}, {"@01b4000101130502", 1}, {"@01b5000100510502", 1}, {"@01b6000100ae0502", 1}, {"@01c1000002440502", 1}, {"@01c1000100540502", 1}, {"@01c10101017a0502", 1}, {"@01c1020103bb0502", 1}, {"@0200000100a10502", 1}, {"@02010001016a0502", 1}, {"@0202000101030502", 1}, {"@02030001019a0502", 1}, {"@0206000103120502", 1}, {"@0208000100960502", 1}, {"@02090001019f0502", 1}, {"@0214000100e40502", 1}, {"@0215000101820502", 1}, {"@0216000100570502", 1}, {"@0217000101b30502", 1}, {"@02190001007e0502", 1}, {"@021a000100da0502", 1}, {"@021b000100800502", 1}, {"@021c000102f70502", 1}, {"@021d000101cd0502", 1}, {"@021e000101230502", 1}, {"@021f000103170502", 1}, {"@0220000100fd0502", 1}, {"@02210001013c0502", 1}, {"@0222000101440502", 1}, {"@022d000100f20502", 1}, {"@022e000101d30502", 1}, {"@022f0001011e0502", 1}, {"@0230000101d20502", 1}, {"@02310001006a0502", 1}, {"@0232000102ea0502", 1}, {"@0233000103060502", 1}, {"@0235000100840502", 1}, {"@0238000102f80502", 1}, {"@023c000100bd0502", 1}, {"@023d000101b50502", 1}, {"@023e000100d10502", 1}, {"@023f000101660502", 1}, {"@024a000101d10502", 1}, {"@024b000101260502", 1}, {"@024d000102f60502", 1}, {"@024f000100810502", 1}, {"@0251000100c10502", 1}, {"@0252000100fe0502", 1}, {"@025d000100550502", 1}, {"@025e000101250502", 1}, {"@025f000101c50502", 1}, {"@025f000101d70502", 1}, {"@0260000100d20502", 1}, {"@0261000100650502", 1}, {"@0262000101370502", 1}, {"@0263000100750502", 1}, {"@0264000101ac0502", 1}, {"@0265000101540502", 1}, {"@0266000100680502", 1}, {"@0267000101080502", 1}, {"@02680001007d0502", 1}, {"@02690001011f0502", 1}, {"@026a000101460502", 1}, {"@026b000100e90502", 1}, {"@026c000100c30502", 1}, {"@026d0001013f0502", 1}, {"@026e000100ba0502", 1}, {"@026f000101900502", 1}, {"@0270000100ff0502", 1}, {"@02710001019b0502", 1}, {"@0272000101860502", 1}, {"@027d000100630502", 1}, {"@027e000101690502", 1}, {"@027f000100b90502", 1}, {"@0280000100830502", 1}, {"@0281000101200502", 1}, {"@0282000101810502", 1}, {"@0282000101d60502", 1}, {"@0283000100c70502", 1}, {"@0284000102fe0502", 1}, {"@0286000103130502", 1}, {"@02870001005a0502", 1}, {"@028a000102e90502", 1}, {"@028b000100e30502", 1}, {"@028c0001013e0502", 1}, {"@028d000101bd0502", 1}, {"@028e0001019e0502", 1}, {"@028f0101031a0502", 1}, {"@0299000100950502", 1}, {"@029a000100ee0502", 1}, {"@029b000100cb0502", 1}, {"@029e0001013d0502", 1}, {"@02a2000101ba0502", 1}, {"@02a3000102ff0502", 1}, {"@02a4000100720502", 1}, {"@02a50001018c0502", 1}, {"@02a6000101240502", 1}, {"@02b1000100690502", 1}, {"@02b2000100c40502", 1}, {"@02b70001030f0502", 1}, {"@02b80001019c0502", 1}, {"@02c3000100dc0502", 1}, {"@02c4000100670502", 1}, {"@02c5000103080502", 1}, {"@02c7000101220502", 1}, {"@02c9000100cd0502", 1}, {"@02ca000101ca0502", 1}, {"@02cb000101360502", 1}, {"@02d6000100560502", 1}, {"@02d7000101300502", 1}, {"@02d8000100e20502", 1}, {"@02d9000101c80502", 1}, {"@02da000101330502", 1}, {"@02db0001005e0502", 1}, {"@02dc000100be0502", 1}, {"@02dd000100ea0502", 1}, {"@02de0001009c0502", 1}, {"@02df000101910502", 1}, {"@02e00101031d0502", 1}, {"@02ea000101800502", 1}, {"@02ea000101d50502", 1}, {"@02eb000100de0502", 1}, {"@02ec000101c40502", 1}, {"@02ed0001015a0502", 1}, {"@02ee000101990502", 1}, {"@02ef000100580502", 1}, {"@02f0000100a70502", 1}, {"@02f1000101450502", 1}, {"@02f2000100cc0502", 1}, {"@02f3000102f90502", 1}, {"@02f4000103050502", 1}, {"@02f8000101380502", 1}, {"@02f9000101020502", 1}, {"@02fa000100970502", 1}, {"@02fb000100900502", 1}, {"@02fc0001018f0502", 1}, {"@0307000100640502", 1}, {"@03080001014d0502", 1}, {"@0309000100c60502", 1}, {"@030a000101c70502", 1}, {"@030b000100790502", 1}, {"@030c000101b80502", 1}, {"@030d000101840502", 1}, {"@030e0001012f0502", 1}, {"@030f0001016d0502", 1}, {"@0310000100f80502", 1}, {"@0311000100d60502", 1}, {"@0312000103090502", 1}, {"@0313000101210502", 1}, {"@0314000102f40502", 1}, {"@0316000101c00502", 1}, {"@0317000100a60502", 1}, {"@03180001006c0502", 1}, {"@0323000100760502", 1}, {"@0324000101890502", 1}, {"@03250001010a0502", 1}, {"@0326000101390502", 1}, {"@0327000101c30502", 1}, {"@0328000102eb0502", 1}, {"@03290001009d0502", 1}, {"@032a000103070502", 1}, {"@032c000101480502", 1}, {"@032d000100bc0502", 1}, {"@032e0101031c0502", 1}, {"@03380001011d0502", 1}, {"@0339000101b10502", 1}, {"@033a000101cc0502", 1}, {"@033b000100fa0502", 1}, {"@033c000101000502", 1}, {"@033d0001013a0502", 1}, {"@033e000101a20502", 1}, {"@033f0001008f0502", 1}, {"@03410001030e0502", 1}, {"@0342000101280502", 1}, {"@0343000102ef0502", 1}, {"@0344000100c50502", 1}, {"@03450001005f0502", 1}, {"@0347000103020502", 1}, {"@03480001006b0502", 1}, {"@03490001018d0502", 1}, {"@034a000101430502", 1}, {"@034b0001009f0502", 1}, {"@0356000101350502", 1}, {"@0357000100eb0502", 1}, {"@0358000102fa0502", 1}, {"@035a000100850502", 1}, {"@035c000101290502", 1}, {"@035d000100c90502", 1}, {"@035e0001018e0502", 1}, {"@0369000100d30502", 1}, {"@036a0001019d0502", 1}, {"@036b0001018b0502", 1}, {"@036d000103040502", 1}, {"@036e000102fb0502", 1}, {"@03700001015d0502", 1}, {"@03710001005c0502", 1}, {"@03720001010b0502", 1}, {"@0373000101340502", 1}, {"@0374010103190502", 1}, {"@037e000101560502", 1}, {"@037f000101aa0502", 1}, {"@0380000101870502", 1}, {"@0381000100d50502", 1}, {"@03820001016b0502", 1}, {"@03830001009b0502", 1}, {"@0384000100860502", 1}, {"@0385000101060502", 1}, {"@0390000101850502", 1}, {"@0392000101270502", 1}, {"@0393000100a00502", 1}, {"@0394000100890502", 1}, {"@0395000102fc0502", 1}, {"@0398000100bf0502", 1}, {"@0399000101c20502", 1}, {"@03a40001014f0502", 1}, {"@03a50001015b0502", 1}, {"@03a6000100c80502", 1}, {"@03a7000101a10502", 1}, {"@03a8000100910502", 1}, {"@03a9000100710502", 1}, {"@03aa000100e60502", 1}, {"@03ab000103160502", 1}, {"@03ac000101880502", 1}, {"@03ad000101b20502", 1}, {"@03ae000100870502", 1}, {"@03af0001012c0502", 1}, {"@03b0000101a90502", 1}, {"@03b1000100f00502", 1}, {"@03bc0001008a0502", 1}, {"@03bd000100f90502", 1}, {"@03be000101980502", 1}, {"@03bf000101bc0502", 1}, {"@03c0000103100502", 1}, {"@03c1000100bb0502", 1}, {"@03c40001012b0502", 1}, {"@03c50001015c0502", 1}, {"@03c6000100930502", 1}, {"@03d1000100c20502", 1}, {"@03d2000100e50502", 1}, {"@03d3000102f30502", 1}, {"@03d6000101570502", 1}, {"@03d7000101b40502", 1}, {"@03d9000101a50502", 1}, {"@03da000101510502", 1}, {"@03db0001006d0502", 1}, {"@03e6000100ec0502", 1}, {"@03e70001012a0502", 1}, {"@03e8000102f50502", 1}, {"@03ea0001030b0502", 1}, {"@03ec000101830502", 1}, {"@03ed000101a30502", 1}, {"@03ee0001008b0502", 1}, {"@03fa000100d00502", 1}, {"@03fb000101cf0502", 1}, {"@03fc000101470502", 1}, {"@03fd000101580502", 1}, {"@03fe000101a40502", 1}, {"@03ff000100f40502", 1}, {"@04000001006f0502", 1}, {"@0401000100660502", 1}, {"@040c000101590502", 1}, {"@040d000100780502", 1}, {"@040e000100880502", 1}, {"@040f000101500502", 1}, {"@04100001007f0502", 1}, {"@0411000101ab0502", 1}, {"@04140001030a0502", 1}, {"@0415000101bb0502", 1}, {"@0416000100fb0502", 1}, {"@0418000100d80502", 1}, {"@041a000100e00502", 1}, {"@041b000100f10502", 1}, {"@041c000101410502", 1}, {"@041d0001018a0502", 1}, {"@041e0001015f0502", 1}, {"@0429000100700502", 1}, {"@042a0001012d0502", 1}, {"@042b000101af0502", 1}, {"@0436000101940502", 1}, {"@0437000101050502", 1}, {"@0438000103000502", 1}, {"@0439000103110502", 1}, {"@043b000103030502", 1}, {"@043c000101cb0502", 1}, {"@043d0001007c0502", 1}, {"@043e000101490502", 1}, {"@043f000101550502", 1}, {"@0440000100ca0502", 1}, {"@044b0001016c0502", 1}, {"@044c0001008e0502", 1}, {"@044d000101930502", 1}, {"@044e000103150502", 1}, {"@0450000100cf0502", 1}, {"@04510001015e0502", 1}, {"@0452000100730502", 1}, {"@0453000101040502", 1}, {"@0454000101ae0502", 1}, {"@045f000101a80502", 1}, {"@0460000100a50502", 1}, {"@0461000101610502", 1}, {"@0462000100f60502", 1}, {"@0463000101310502", 1}, {"@0464000100c00502", 1}, {"@04650001006e0502", 1}, {"@0468000102f20502", 1}, {"@0469000101640502", 1}, {"@046a000101d00502", 1}, {"@046b000101970502", 1}, {"@046c0001008c0502", 1}, {"@046d000100f30502", 1}, {"@0478000101630502", 1}, {"@0479000100920502", 1}, {"@047a000100600502", 1}, {"@047b000100f50502", 1}, {"@047c000101a00502", 1}, {"@047d0001012e0502", 1}, {"@04800001008d0502", 1}, {"@0481000102f10502", 1}, {"@0482000102fd0502", 1}, {"@0483000101b00502", 1}, {"@04850001014c0502", 1}, {"@0486000100fc0502", 1}, {"@0487000101bf0502", 1}, {"@0488000100980502", 1}, {"@0489000100ef0502", 1}, {"@04940001009a0502", 1}, {"@0495000101920502", 1}, {"@0496000100d90502", 1}, {"@04970001007a0502", 1}, {"@04980001014a0502", 1}, {"@0499000100df0502", 1}, {"@049a0001014e0502", 1}, {"@049b000100610502", 1}, {"@049c000101400502", 1}, {"@049d000100ed0502", 1}, {"@049e000101b70502", 1}, {"@049f000103010502", 1}, {"@04a00001016e0502", 1}, {"@04a10001016f0502", 1}, {"@04a2000102e80502", 1}, {"@04a3000101c90502", 1}, {"@04a4000100d40502", 1}, {"@04a5000100740502", 1}, {"@04a6000100a30502", 1}, {"@04a7000101a60502", 1}, {"@04a80101031e0502", 1}, {"@04b2000101b90502", 1}, {"@04b3000100dd0502", 1}, {"@04b40001030c0502", 1}, {"@04b6000102ec0502", 1}, {"@04b9000101600502", 1}, {"@04ba0001005d0502", 1}, {"@04c5000101010502", 1}, {"@04c6000101670502", 1}, {"@04c7000100940502", 1}, {"@04c8000102ed0502", 1}, {"@04c90001030d0502", 1}, {"@04cc000100a40502", 1}, {"@04cd000101520502", 1}, {"@04ce000100db0502", 1}, {"@04cf000100e10502", 1}, {"@04d0000101960502", 1}, {"@04d10001009e0502", 1}, {"@04d2000101a70502", 1}, {"@04d30101031b0502", 1}, {"@04dd000100a20502", 1}, {"@04de000100ce0502", 1}, {"@04df000100e80502", 1}, {"@04e0000100f70502", 1}, {"@04e1000101be0502", 1}, {"@04e2000101090502", 1}, {"@04e3000101650502", 1}, {"@04e4000101b60502", 1}, {"@04e5000101ad0502", 1}, {"@04e6000100820502", 1}, {"@04e7000101320502", 1}, {"@04e8000101ce0502", 1}, {"@04ea000103180502", 1}, {"@04eb000102f00502", 1}, {"@04ec000100770502", 1}, {"@04ed000100620502", 1}, {"@04ee0001014b0502", 1}, {"@04ef0001013b0502", 1}, {"@04fa000101680502", 1}, {"@04fb000101c60502", 1}, {"@04fc000102ee0502", 1}, {"@04fd0001007b0502", 1}, {"@04fe000100590502", 1}, {"@04ff000101620502", 1}, {"@0500000100e70502", 1}, {"@050b000100990502", 1}, {"@050c000101c10502", 1}, {"@050d000101420502", 1}, {"@050e000100d70502", 1}, {"@050f000103140502", 1}, {"@0510000101070502", 1}, {"@0511000101950502", 1}, {"@0513000102e70502", 1}, {"@0514000101530502", 1}, {"@05150001005b0502", 1}, {"@08000100003e0402", 1}, {"@08000100025f0402", 1}, {"@0800010003690402", 1}, {"@0800010003820002", 1}, {"@0800010004150402", 1}, {"@08000200003f0402", 1}, {"@0800020002600402", 1}, {"@08000200036a0402", 1}, {"@0800030000400402", 1}, {"@0800030002610402", 1}, {"@08000300036b0402", 1}, {"@08010000025d0402", 1}, {"@0801000004360402", 1}, {"@08020000025e0402", 1}, {"@0802000004370402", 1}, {"@0a12000103c90502", 1}, {"@0a1c000103d30502", 1}, {"@3500010002e10f02", 1}, {"@3500020002e20f02", 1}, {"@3501000002e30f02", 1}, {"@3502010002e40f02", 1}, {"@3503010002e50f02", 1}, {"@3504010002e60f02", 1} } },
+	{"0004000000198F00", { {"@0100000000040002", 1}, {"@01000000034b0902", 1}, {"@01000000034c0902", 1}, {"@01000000034d0902", 1}, {"@01000000034e0902", 1}, {"@01000000034f0902", 1}, {"@0100000003530902", 1}, {"@0100000003540902", 1}, {"@01000000037c0002", 1}, {"@0100000003990902", 1}, {"@0100000004180902", 1}, {"@0100010000160002", 1}, {"@0100010003500902", 1}, {"@01010000000e0002", 1}, {"@0101000003520902", 1}, {"@0101000003560902", 1}, {"@0101000004190902", 1}, {"@0101010000170002", 1}, {"@0101030004140902", 1}, {"@01020100001b0002", 1}, {"@01020100041a0902", 1}, {"@01030000024f0902", 1}, {"@0140000003550902", 1}, {"@01410000035c0902", 1}, {"@0180000000080002", 1}, {"@01810000024b0502", 1}, {"@01810000037d0002", 1}, {"@0181000100440502", 1}, {"@0181000101d40502", 1}, {"@01810100023f0502", 1}, {"@0181010100b40502", 1}, {"@01810201011a0502", 1}, {"@0181030101700502", 1}, {"@0181040103aa0502", 1}, {"@0181050103bf0502", 1}, {"@0182000002400502", 1}, {"@0182000100a80502", 1}, {"@0182000101d80502", 1}, {"@0182000103b20502", 1}, {"@0182010100460502", 1}, {"@0183000002420502", 1}, {"@0183000100450502", 1}, {"@01830101010e0502", 1}, {"@0183020103a80502", 1}, {"@0183030103be0502", 1}, {"@01840000024d0502", 1}, {"@0184050103a90502", 1}, {"@01850001004b0502", 1}, {"@0185020101170502", 1}, {"@0185040101790502", 1}, {"@0186010100af0502", 1}, {"@0186030101750502", 1}, {"@0187000100470502", 1}, {"@0187000103b00502", 1}, {"@0188000002410502", 1}, {"@0188000101120502", 1}, {"@0188000103af0502", 1}, {"@0189000100ab0502", 1}, {"@0189010103b10502", 1}, {"@018a000002450502", 1}, {"@018a000100a90502", 1}, {"@018b000002460502", 1}, {"@018b000101150502", 1}, {"@018c000002430502", 1}, {"@018c0001004c0502", 1}, {"@018c010101180502", 1}, {"@018d0000024c0502", 1}, {"@018d0001010c0502", 1}, {"@018e000002490502", 1}, {"@018e000100490502", 1}, {"@018e010101780502", 1}, {"@018f000100b30502", 1}, {"@018f010101190502", 1}, {"@0190000101710502", 1}, {"@01910001004e0502", 1}, {"@0192000002470502", 1}, {"@01920001010d0502", 1}, {"@0192000103ad0502", 1}, {"@0193000002480502", 1}, {"@0193000101740502", 1}, {"@0193000103ae0502", 1}, {"@01940000024a0502", 1}, {"@0194000100aa0502", 1}, {"@0194000103b60502", 1}, {"@0195000100b00502", 1}, {"@01960000024e0502", 1}, {"@0196000100480502", 1}, {"@0197000101770502", 1}, {"@0198000100b10502", 1}, {"@0199000101160502", 1}, {"@019a000100b70502", 1}, {"@019b000100b60502", 1}, {"@019c000101730502", 1}, {"@019d000100ac0502", 1}, {"@019e000100ad0502", 1}, {"@019f000101110502", 1}, {"@01a00001010f0502", 1}, {"@01a1000101100502", 1}, {"@01a20001017d0502", 1}, {"@01a2000103b90502", 1}, {"@01a30001004a0502", 1}, {"@01a40001004d0502", 1}, {"@01a5000101720502", 1}, {"@01a6000100500502", 1}, {"@01a6000103b70502", 1}, {"@01a7000101140502", 1}, {"@01a80001004f0502", 1}, {"@01a80101017e0502", 1}, {"@01a9000101760502", 1}, {"@01aa000100530502", 1}, {"@01ab0001017c0502", 1}, {"@01ac0001017f0502", 1}, {"@01ad000100b80502", 1}, {"@01ae0001011b0502", 1}, {"@01af0001011c0502", 1}, {"@01b0000100520502", 1}, {"@01b1000100b20502", 1}, {"@01b10101017b0502", 1}, {"@01b3000100b50502", 1}, {"@01b4000101130502", 1}, {"@01b5000100510502", 1}, {"@01b6000100ae0502", 1}, {"@01c1000002440502", 1}, {"@01c1000100540502", 1}, {"@01c10101017a0502", 1}, {"@01c1020103bb0502", 1}, {"@0200000100a10502", 1}, {"@02010001016a0502", 1}, {"@0202000101030502", 1}, {"@02030001019a0502", 1}, {"@0206000103120502", 1}, {"@0208000100960502", 1}, {"@02090001019f0502", 1}, {"@0214000100e40502", 1}, {"@0215000101820502", 1}, {"@0216000100570502", 1}, {"@0217000101b30502", 1}, {"@02190001007e0502", 1}, {"@021a000100da0502", 1}, {"@021b000100800502", 1}, {"@021c000102f70502", 1}, {"@021d000101cd0502", 1}, {"@021e000101230502", 1}, {"@021f000103170502", 1}, {"@0220000100fd0502", 1}, {"@02210001013c0502", 1}, {"@0222000101440502", 1}, {"@022d000100f20502", 1}, {"@022e000101d30502", 1}, {"@022f0001011e0502", 1}, {"@0230000101d20502", 1}, {"@02310001006a0502", 1}, {"@0232000102ea0502", 1}, {"@0233000103060502", 1}, {"@0235000100840502", 1}, {"@0238000102f80502", 1}, {"@023c000100bd0502", 1}, {"@023d000101b50502", 1}, {"@023e000100d10502", 1}, {"@023f000101660502", 1}, {"@024a000101d10502", 1}, {"@024b000101260502", 1}, {"@024d000102f60502", 1}, {"@024f000100810502", 1}, {"@0251000100c10502", 1}, {"@0252000100fe0502", 1}, {"@025d000100550502", 1}, {"@025e000101250502", 1}, {"@025f000101c50502", 1}, {"@025f000101d70502", 1}, {"@0260000100d20502", 1}, {"@0261000100650502", 1}, {"@0262000101370502", 1}, {"@0263000100750502", 1}, {"@0264000101ac0502", 1}, {"@0265000101540502", 1}, {"@0266000100680502", 1}, {"@0267000101080502", 1}, {"@02680001007d0502", 1}, {"@02690001011f0502", 1}, {"@026a000101460502", 1}, {"@026b000100e90502", 1}, {"@026c000100c30502", 1}, {"@026d0001013f0502", 1}, {"@026e000100ba0502", 1}, {"@026f000101900502", 1}, {"@0270000100ff0502", 1}, {"@02710001019b0502", 1}, {"@0272000101860502", 1}, {"@027d000100630502", 1}, {"@027e000101690502", 1}, {"@027f000100b90502", 1}, {"@0280000100830502", 1}, {"@0281000101200502", 1}, {"@0282000101810502", 1}, {"@0282000101d60502", 1}, {"@0283000100c70502", 1}, {"@0284000102fe0502", 1}, {"@0286000103130502", 1}, {"@02870001005a0502", 1}, {"@028a000102e90502", 1}, {"@028b000100e30502", 1}, {"@028c0001013e0502", 1}, {"@028d000101bd0502", 1}, {"@028e0001019e0502", 1}, {"@028f0101031a0502", 1}, {"@0299000100950502", 1}, {"@029a000100ee0502", 1}, {"@029b000100cb0502", 1}, {"@029e0001013d0502", 1}, {"@02a2000101ba0502", 1}, {"@02a3000102ff0502", 1}, {"@02a4000100720502", 1}, {"@02a50001018c0502", 1}, {"@02a6000101240502", 1}, {"@02b1000100690502", 1}, {"@02b2000100c40502", 1}, {"@02b70001030f0502", 1}, {"@02b80001019c0502", 1}, {"@02c3000100dc0502", 1}, {"@02c4000100670502", 1}, {"@02c5000103080502", 1}, {"@02c7000101220502", 1}, {"@02c9000100cd0502", 1}, {"@02ca000101ca0502", 1}, {"@02cb000101360502", 1}, {"@02d6000100560502", 1}, {"@02d7000101300502", 1}, {"@02d8000100e20502", 1}, {"@02d9000101c80502", 1}, {"@02da000101330502", 1}, {"@02db0001005e0502", 1}, {"@02dc000100be0502", 1}, {"@02dd000100ea0502", 1}, {"@02de0001009c0502", 1}, {"@02df000101910502", 1}, {"@02e00101031d0502", 1}, {"@02ea000101800502", 1}, {"@02ea000101d50502", 1}, {"@02eb000100de0502", 1}, {"@02ec000101c40502", 1}, {"@02ed0001015a0502", 1}, {"@02ee000101990502", 1}, {"@02ef000100580502", 1}, {"@02f0000100a70502", 1}, {"@02f1000101450502", 1}, {"@02f2000100cc0502", 1}, {"@02f3000102f90502", 1}, {"@02f4000103050502", 1}, {"@02f8000101380502", 1}, {"@02f9000101020502", 1}, {"@02fa000100970502", 1}, {"@02fb000100900502", 1}, {"@02fc0001018f0502", 1}, {"@0307000100640502", 1}, {"@03080001014d0502", 1}, {"@0309000100c60502", 1}, {"@030a000101c70502", 1}, {"@030b000100790502", 1}, {"@030c000101b80502", 1}, {"@030d000101840502", 1}, {"@030e0001012f0502", 1}, {"@030f0001016d0502", 1}, {"@0310000100f80502", 1}, {"@0311000100d60502", 1}, {"@0312000103090502", 1}, {"@0313000101210502", 1}, {"@0314000102f40502", 1}, {"@0316000101c00502", 1}, {"@0317000100a60502", 1}, {"@03180001006c0502", 1}, {"@0323000100760502", 1}, {"@0324000101890502", 1}, {"@03250001010a0502", 1}, {"@0326000101390502", 1}, {"@0327000101c30502", 1}, {"@0328000102eb0502", 1}, {"@03290001009d0502", 1}, {"@032a000103070502", 1}, {"@032c000101480502", 1}, {"@032d000100bc0502", 1}, {"@032e0101031c0502", 1}, {"@03380001011d0502", 1}, {"@0339000101b10502", 1}, {"@033a000101cc0502", 1}, {"@033b000100fa0502", 1}, {"@033c000101000502", 1}, {"@033d0001013a0502", 1}, {"@033e000101a20502", 1}, {"@033f0001008f0502", 1}, {"@03410001030e0502", 1}, {"@0342000101280502", 1}, {"@0343000102ef0502", 1}, {"@0344000100c50502", 1}, {"@03450001005f0502", 1}, {"@0347000103020502", 1}, {"@03480001006b0502", 1}, {"@03490001018d0502", 1}, {"@034a000101430502", 1}, {"@034b0001009f0502", 1}, {"@0356000101350502", 1}, {"@0357000100eb0502", 1}, {"@0358000102fa0502", 1}, {"@035a000100850502", 1}, {"@035c000101290502", 1}, {"@035d000100c90502", 1}, {"@035e0001018e0502", 1}, {"@0369000100d30502", 1}, {"@036a0001019d0502", 1}, {"@036b0001018b0502", 1}, {"@036d000103040502", 1}, {"@036e000102fb0502", 1}, {"@03700001015d0502", 1}, {"@03710001005c0502", 1}, {"@03720001010b0502", 1}, {"@0373000101340502", 1}, {"@0374010103190502", 1}, {"@037e000101560502", 1}, {"@037f000101aa0502", 1}, {"@0380000101870502", 1}, {"@0381000100d50502", 1}, {"@03820001016b0502", 1}, {"@03830001009b0502", 1}, {"@0384000100860502", 1}, {"@0385000101060502", 1}, {"@0390000101850502", 1}, {"@0392000101270502", 1}, {"@0393000100a00502", 1}, {"@0394000100890502", 1}, {"@0395000102fc0502", 1}, {"@0398000100bf0502", 1}, {"@0399000101c20502", 1}, {"@03a40001014f0502", 1}, {"@03a50001015b0502", 1}, {"@03a6000100c80502", 1}, {"@03a7000101a10502", 1}, {"@03a8000100910502", 1}, {"@03a9000100710502", 1}, {"@03aa000100e60502", 1}, {"@03ab000103160502", 1}, {"@03ac000101880502", 1}, {"@03ad000101b20502", 1}, {"@03ae000100870502", 1}, {"@03af0001012c0502", 1}, {"@03b0000101a90502", 1}, {"@03b1000100f00502", 1}, {"@03bc0001008a0502", 1}, {"@03bd000100f90502", 1}, {"@03be000101980502", 1}, {"@03bf000101bc0502", 1}, {"@03c0000103100502", 1}, {"@03c1000100bb0502", 1}, {"@03c40001012b0502", 1}, {"@03c50001015c0502", 1}, {"@03c6000100930502", 1}, {"@03d1000100c20502", 1}, {"@03d2000100e50502", 1}, {"@03d3000102f30502", 1}, {"@03d6000101570502", 1}, {"@03d7000101b40502", 1}, {"@03d9000101a50502", 1}, {"@03da000101510502", 1}, {"@03db0001006d0502", 1}, {"@03e6000100ec0502", 1}, {"@03e70001012a0502", 1}, {"@03e8000102f50502", 1}, {"@03ea0001030b0502", 1}, {"@03ec000101830502", 1}, {"@03ed000101a30502", 1}, {"@03ee0001008b0502", 1}, {"@03fa000100d00502", 1}, {"@03fb000101cf0502", 1}, {"@03fc000101470502", 1}, {"@03fd000101580502", 1}, {"@03fe000101a40502", 1}, {"@03ff000100f40502", 1}, {"@04000001006f0502", 1}, {"@0401000100660502", 1}, {"@040c000101590502", 1}, {"@040d000100780502", 1}, {"@040e000100880502", 1}, {"@040f000101500502", 1}, {"@04100001007f0502", 1}, {"@0411000101ab0502", 1}, {"@04140001030a0502", 1}, {"@0415000101bb0502", 1}, {"@0416000100fb0502", 1}, {"@0418000100d80502", 1}, {"@041a000100e00502", 1}, {"@041b000100f10502", 1}, {"@041c000101410502", 1}, {"@041d0001018a0502", 1}, {"@041e0001015f0502", 1}, {"@0429000100700502", 1}, {"@042a0001012d0502", 1}, {"@042b000101af0502", 1}, {"@0436000101940502", 1}, {"@0437000101050502", 1}, {"@0438000103000502", 1}, {"@0439000103110502", 1}, {"@043b000103030502", 1}, {"@043c000101cb0502", 1}, {"@043d0001007c0502", 1}, {"@043e000101490502", 1}, {"@043f000101550502", 1}, {"@0440000100ca0502", 1}, {"@044b0001016c0502", 1}, {"@044c0001008e0502", 1}, {"@044d000101930502", 1}, {"@044e000103150502", 1}, {"@0450000100cf0502", 1}, {"@04510001015e0502", 1}, {"@0452000100730502", 1}, {"@0453000101040502", 1}, {"@0454000101ae0502", 1}, {"@045f000101a80502", 1}, {"@0460000100a50502", 1}, {"@0461000101610502", 1}, {"@0462000100f60502", 1}, {"@0463000101310502", 1}, {"@0464000100c00502", 1}, {"@04650001006e0502", 1}, {"@0468000102f20502", 1}, {"@0469000101640502", 1}, {"@046a000101d00502", 1}, {"@046b000101970502", 1}, {"@046c0001008c0502", 1}, {"@046d000100f30502", 1}, {"@0478000101630502", 1}, {"@0479000100920502", 1}, {"@047a000100600502", 1}, {"@047b000100f50502", 1}, {"@047c000101a00502", 1}, {"@047d0001012e0502", 1}, {"@04800001008d0502", 1}, {"@0481000102f10502", 1}, {"@0482000102fd0502", 1}, {"@0483000101b00502", 1}, {"@04850001014c0502", 1}, {"@0486000100fc0502", 1}, {"@0487000101bf0502", 1}, {"@0488000100980502", 1}, {"@0489000100ef0502", 1}, {"@04940001009a0502", 1}, {"@0495000101920502", 1}, {"@0496000100d90502", 1}, {"@04970001007a0502", 1}, {"@04980001014a0502", 1}, {"@0499000100df0502", 1}, {"@049a0001014e0502", 1}, {"@049b000100610502", 1}, {"@049c000101400502", 1}, {"@049d000100ed0502", 1}, {"@049e000101b70502", 1}, {"@049f000103010502", 1}, {"@04a00001016e0502", 1}, {"@04a10001016f0502", 1}, {"@04a2000102e80502", 1}, {"@04a3000101c90502", 1}, {"@04a4000100d40502", 1}, {"@04a5000100740502", 1}, {"@04a6000100a30502", 1}, {"@04a7000101a60502", 1}, {"@04a80101031e0502", 1}, {"@04b2000101b90502", 1}, {"@04b3000100dd0502", 1}, {"@04b40001030c0502", 1}, {"@04b6000102ec0502", 1}, {"@04b9000101600502", 1}, {"@04ba0001005d0502", 1}, {"@04c5000101010502", 1}, {"@04c6000101670502", 1}, {"@04c7000100940502", 1}, {"@04c8000102ed0502", 1}, {"@04c90001030d0502", 1}, {"@04cc000100a40502", 1}, {"@04cd000101520502", 1}, {"@04ce000100db0502", 1}, {"@04cf000100e10502", 1}, {"@04d0000101960502", 1}, {"@04d10001009e0502", 1}, {"@04d2000101a70502", 1}, {"@04d30101031b0502", 1}, {"@04dd000100a20502", 1}, {"@04de000100ce0502", 1}, {"@04df000100e80502", 1}, {"@04e0000100f70502", 1}, {"@04e1000101be0502", 1}, {"@04e2000101090502", 1}, {"@04e3000101650502", 1}, {"@04e4000101b60502", 1}, {"@04e5000101ad0502", 1}, {"@04e6000100820502", 1}, {"@04e7000101320502", 1}, {"@04e8000101ce0502", 1}, {"@04ea000103180502", 1}, {"@04eb000102f00502", 1}, {"@04ec000100770502", 1}, {"@04ed000100620502", 1}, {"@04ee0001014b0502", 1}, {"@04ef0001013b0502", 1}, {"@04fa000101680502", 1}, {"@04fb000101c60502", 1}, {"@04fc000102ee0502", 1}, {"@04fd0001007b0502", 1}, {"@04fe000100590502", 1}, {"@04ff000101620502", 1}, {"@0500000100e70502", 1}, {"@050b000100990502", 1}, {"@050c000101c10502", 1}, {"@050d000101420502", 1}, {"@050e000100d70502", 1}, {"@050f000103140502", 1}, {"@0510000101070502", 1}, {"@0511000101950502", 1}, {"@0513000102e70502", 1}, {"@0514000101530502", 1}, {"@05150001005b0502", 1}, {"@08000100003e0402", 1}, {"@08000100025f0402", 1}, {"@0800010003690402", 1}, {"@0800010003820002", 1}, {"@0800010004150402", 1}, {"@08000200003f0402", 1}, {"@0800020002600402", 1}, {"@08000200036a0402", 1}, {"@0800030000400402", 1}, {"@0800030002610402", 1}, {"@08000300036b0402", 1}, {"@08010000025d0402", 1}, {"@0801000004360402", 1}, {"@08020000025e0402", 1}, {"@0802000004370402", 1}, {"@0a12000103c90502", 1}, {"@0a1c000103d30502", 1}, {"@3500010002e10f02", 1}, {"@3500020002e20f02", 1}, {"@3501000002e30f02", 1}, {"@3502010002e40f02", 1}, {"@3503010002e50f02", 1}, {"@3504010002e60f02", 1} } },
+	{"000400000017EA00", { {"@0100000000040002", 1}, {"@01000000034b0902", 1}, {"@01000000034c0902", 1}, {"@01000000034d0902", 1}, {"@01000000034e0902", 1}, {"@01000000034f0902", 1}, {"@0100000003530902", 1}, {"@0100000003540902", 1}, {"@01000000037c0002", 1}, {"@0100000003990902", 1}, {"@0100000004180902", 1}, {"@0100010000160002", 1}, {"@0100010003500902", 1}, {"@01010000000e0002", 1}, {"@0101000003520902", 1}, {"@0101000003560902", 1}, {"@0101000004190902", 1}, {"@0101010000170002", 1}, {"@0101030004140902", 1}, {"@01020100001b0002", 1}, {"@01020100041a0902", 1}, {"@01030000024f0902", 1} } },
+	{"000400000017EB00", { {"@0100000000040002", 1}, {"@01000000034b0902", 1}, {"@01000000034c0902", 1}, {"@01000000034d0902", 1}, {"@01000000034e0902", 1}, {"@01000000034f0902", 1}, {"@0100000003530902", 1}, {"@0100000003540902", 1}, {"@01000000037c0002", 1}, {"@0100000003990902", 1}, {"@0100000004180902", 1}, {"@0100010000160002", 1}, {"@0100010003500902", 1}, {"@01010000000e0002", 1}, {"@0101000003520902", 1}, {"@0101000003560902", 1}, {"@0101000004190902", 1}, {"@0101010000170002", 1}, {"@0101030004140902", 1}, {"@01020100001b0002", 1}, {"@01020100041a0902", 1}, {"@01030000024f0902", 1} } },
+	{"0004000000193200", { {"@0100000000040002", 1}, {"@01000000034b0902", 1}, {"@01000000034c0902", 1}, {"@01000000034d0902", 1}, {"@01000000034e0902", 1}, {"@01000000034f0902", 1}, {"@0100000003530902", 1}, {"@0100000003540902", 1}, {"@01000000037c0002", 1}, {"@0100000003990902", 1}, {"@0100000004180902", 1}, {"@0100010000160002", 1}, {"@0100010003500902", 1}, {"@01010000000e0002", 1}, {"@0101000003520902", 1}, {"@0101000003560902", 1}, {"@0101000004190902", 1}, {"@0101010000170002", 1}, {"@0101030004140902", 1}, {"@01020100001b0002", 1}, {"@01020100041a0902", 1}, {"@01030000024f0902", 1} } },
+	{"0004000000193400", { {"@0100000000040002", 1}, {"@01000000034b0902", 1}, {"@01000000034c0902", 1}, {"@01000000034d0902", 1}, {"@01000000034e0902", 1}, {"@01000000034f0902", 1}, {"@0100000003530902", 1}, {"@0100000003540902", 1}, {"@01000000037c0002", 1}, {"@0100000003990902", 1}, {"@0100000004180902", 1}, {"@0100010000160002", 1}, {"@0100010003500902", 1}, {"@01010000000e0002", 1}, {"@0101000003520902", 1}, {"@0101000003560902", 1}, {"@0101000004190902", 1}, {"@0101010000170002", 1}, {"@0101030004140902", 1}, {"@01020100001b0002", 1}, {"@01020100041a0902", 1}, {"@01030000024f0902", 1} } },
+	{"000400000014F100", { {"@0180000000080002", 1}, {"@01810000024b0502", 1}, {"@01810000037d0002", 1}, {"@0181000100440502", 1}, {"@0181000101d40502", 1}, {"@01810100023f0502", 1}, {"@0181010100b40502", 1}, {"@01810201011a0502", 1}, {"@0181030101700502", 1}, {"@0181040103aa0502", 1}, {"@0181050103bf0502", 1}, {"@0182000002400502", 1}, {"@0182000100a80502", 1}, {"@0182000101d80502", 1}, {"@0182000103b20502", 1}, {"@0182010100460502", 1}, {"@0183000002420502", 1}, {"@0183000100450502", 1}, {"@01830101010e0502", 1}, {"@0183020103a80502", 1}, {"@0183030103be0502", 1}, {"@01840000024d0502", 1}, {"@0184050103a90502", 1}, {"@01850001004b0502", 1}, {"@0185020101170502", 1}, {"@0185040101790502", 1}, {"@0186010100af0502", 1}, {"@0186030101750502", 1}, {"@0187000100470502", 1}, {"@0187000103b00502", 1}, {"@0188000002410502", 1}, {"@0188000101120502", 1}, {"@0188000103af0502", 1}, {"@0189000100ab0502", 1}, {"@0189010103b10502", 1}, {"@018a000002450502", 1}, {"@018a000100a90502", 1}, {"@018b000002460502", 1}, {"@018b000101150502", 1}, {"@018c000002430502", 1}, {"@018c0001004c0502", 1}, {"@018c010101180502", 1}, {"@018d0000024c0502", 1}, {"@018d0001010c0502", 1}, {"@018e000002490502", 1}, {"@018e000100490502", 1}, {"@018e010101780502", 1}, {"@018f000100b30502", 1}, {"@018f010101190502", 1}, {"@0190000101710502", 1}, {"@01910001004e0502", 1}, {"@0192000002470502", 1}, {"@01920001010d0502", 1}, {"@0192000103ad0502", 1}, {"@0193000002480502", 1}, {"@0193000101740502", 1}, {"@0193000103ae0502", 1}, {"@01940000024a0502", 1}, {"@0194000100aa0502", 1}, {"@0194000103b60502", 1}, {"@0195000100b00502", 1}, {"@01960000024e0502", 1}, {"@0196000100480502", 1}, {"@0197000101770502", 1}, {"@0198000100b10502", 1}, {"@0199000101160502", 1}, {"@019a000100b70502", 1}, {"@019b000100b60502", 1}, {"@019c000101730502", 1}, {"@019d000100ac0502", 1}, {"@019e000100ad0502", 1}, {"@019f000101110502", 1}, {"@01a00001010f0502", 1}, {"@01a1000101100502", 1}, {"@01a20001017d0502", 1}, {"@01a2000103b90502", 1}, {"@01a30001004a0502", 1}, {"@01a40001004d0502", 1}, {"@01a5000101720502", 1}, {"@01a6000100500502", 1}, {"@01a6000103b70502", 1}, {"@01a7000101140502", 1}, {"@01a80001004f0502", 1}, {"@01a80101017e0502", 1}, {"@01a9000101760502", 1}, {"@01aa000100530502", 1}, {"@01ab0001017c0502", 1}, {"@01ac0001017f0502", 1}, {"@01ad000100b80502", 1}, {"@01ae0001011b0502", 1}, {"@01af0001011c0502", 1}, {"@01b0000100520502", 1}, {"@01b1000100b20502", 1}, {"@01b10101017b0502", 1}, {"@01b3000100b50502", 1}, {"@01b4000101130502", 1}, {"@01b5000100510502", 1}, {"@01b6000100ae0502", 1}, {"@01c1000002440502", 1}, {"@01c1000100540502", 1}, {"@01c10101017a0502", 1}, {"@01c1020103bb0502", 1}, {"@0200000100a10502", 1}, {"@02010001016a0502", 1}, {"@0202000101030502", 1}, {"@02030001019a0502", 1}, {"@0208000100960502", 1}, {"@02090001019f0502", 1}, {"@0214000100e40502", 1}, {"@0215000101820502", 1}, {"@0216000100570502", 1}, {"@0217000101b30502", 1}, {"@02190001007e0502", 1}, {"@021a000100da0502", 1}, {"@021b000100800502", 1}, {"@021d000101cd0502", 1}, {"@021e000101230502", 1}, {"@0220000100fd0502", 1}, {"@02210001013c0502", 1}, {"@0222000101440502", 1}, {"@022d000100f20502", 1}, {"@022e000101d30502", 1}, {"@022f0001011e0502", 1}, {"@0230000101d20502", 1}, {"@02310001006a0502", 1}, {"@0235000100840502", 1}, {"@023c000100bd0502", 1}, {"@023d000101b50502", 1}, {"@023e000100d10502", 1}, {"@023f000101660502", 1}, {"@024a000101d10502", 1}, {"@024b000101260502", 1}, {"@024f000100810502", 1}, {"@0251000100c10502", 1}, {"@0252000100fe0502", 1}, {"@025d000100550502", 1}, {"@025e000101250502", 1}, {"@025f000101c50502", 1}, {"@025f000101d70502", 1}, {"@0260000100d20502", 1}, {"@0261000100650502", 1}, {"@0262000101370502", 1}, {"@0263000100750502", 1}, {"@0264000101ac0502", 1}, {"@0265000101540502", 1}, {"@0266000100680502", 1}, {"@0267000101080502", 1}, {"@02680001007d0502", 1}, {"@02690001011f0502", 1}, {"@026a000101460502", 1}, {"@026b000100e90502", 1}, {"@026c000100c30502", 1}, {"@026d0001013f0502", 1}, {"@026e000100ba0502", 1}, {"@026f000101900502", 1}, {"@0270000100ff0502", 1}, {"@02710001019b0502", 1}, {"@0272000101860502", 1}, {"@027d000100630502", 1}, {"@027e000101690502", 1}, {"@027f000100b90502", 1}, {"@0280000100830502", 1}, {"@0281000101200502", 1}, {"@0282000101810502", 1}, {"@0282000101d60502", 1}, {"@0283000100c70502", 1}, {"@02870001005a0502", 1}, {"@028b000100e30502", 1}, {"@028c0001013e0502", 1}, {"@028d000101bd0502", 1}, {"@028e0001019e0502", 1}, {"@0299000100950502", 1}, {"@029a000100ee0502", 1}, {"@029b000100cb0502", 1}, {"@029e0001013d0502", 1}, {"@02a2000101ba0502", 1}, {"@02a4000100720502", 1}, {"@02a50001018c0502", 1}, {"@02a6000101240502", 1}, {"@02b1000100690502", 1}, {"@02b2000100c40502", 1}, {"@02b80001019c0502", 1}, {"@02c3000100dc0502", 1}, {"@02c4000100670502", 1}, {"@02c7000101220502", 1}, {"@02c9000100cd0502", 1}, {"@02ca000101ca0502", 1}, {"@02cb000101360502", 1}, {"@02d6000100560502", 1}, {"@02d7000101300502", 1}, {"@02d8000100e20502", 1}, {"@02d9000101c80502", 1}, {"@02da000101330502", 1}, {"@02db0001005e0502", 1}, {"@02dc000100be0502", 1}, {"@02dd000100ea0502", 1}, {"@02de0001009c0502", 1}, {"@02df000101910502", 1}, {"@02ea000101800502", 1}, {"@02ea000101d50502", 1}, {"@02eb000100de0502", 1}, {"@02ec000101c40502", 1}, {"@02ed0001015a0502", 1}, {"@02ee000101990502", 1}, {"@02ef000100580502", 1}, {"@02f0000100a70502", 1}, {"@02f1000101450502", 1}, {"@02f2000100cc0502", 1}, {"@02f4000103050502", 1}, {"@02f8000101380502", 1}, {"@02f9000101020502", 1}, {"@02fa000100970502", 1}, {"@02fb000100900502", 1}, {"@02fc0001018f0502", 1}, {"@0307000100640502", 1}, {"@03080001014d0502", 1}, {"@0309000100c60502", 1}, {"@030a000101c70502", 1}, {"@030b000100790502", 1}, {"@030c000101b80502", 1}, {"@030d000101840502", 1}, {"@030e0001012f0502", 1}, {"@030f0001016d0502", 1}, {"@0310000100f80502", 1}, {"@0311000100d60502", 1}, {"@0313000101210502", 1}, {"@0316000101c00502", 1}, {"@0317000100a60502", 1}, {"@03180001006c0502", 1}, {"@0323000100760502", 1}, {"@0324000101890502", 1}, {"@03250001010a0502", 1}, {"@0326000101390502", 1}, {"@0327000101c30502", 1}, {"@03290001009d0502", 1}, {"@032c000101480502", 1}, {"@032d000100bc0502", 1}, {"@03380001011d0502", 1}, {"@0339000101b10502", 1}, {"@033a000101cc0502", 1}, {"@033b000100fa0502", 1}, {"@033c000101000502", 1}, {"@033d0001013a0502", 1}, {"@033e000101a20502", 1}, {"@033f0001008f0502", 1}, {"@0342000101280502", 1}, {"@0344000100c50502", 1}, {"@03450001005f0502", 1}, {"@03480001006b0502", 1}, {"@03490001018d0502", 1}, {"@034a000101430502", 1}, {"@034b0001009f0502", 1}, {"@0356000101350502", 1}, {"@0357000100eb0502", 1}, {"@035a000100850502", 1}, {"@035c000101290502", 1}, {"@035d000100c90502", 1}, {"@035e0001018e0502", 1}, {"@0369000100d30502", 1}, {"@036a0001019d0502", 1}, {"@036b0001018b0502", 1}, {"@03700001015d0502", 1}, {"@03710001005c0502", 1}, {"@03720001010b0502", 1}, {"@0373000101340502", 1}, {"@037e000101560502", 1}, {"@037f000101aa0502", 1}, {"@0380000101870502", 1}, {"@0381000100d50502", 1}, {"@03820001016b0502", 1}, {"@03830001009b0502", 1}, {"@0384000100860502", 1}, {"@0385000101060502", 1}, {"@0390000101850502", 1}, {"@0392000101270502", 1}, {"@0393000100a00502", 1}, {"@0394000100890502", 1}, {"@0398000100bf0502", 1}, {"@0399000101c20502", 1}, {"@03a40001014f0502", 1}, {"@03a50001015b0502", 1}, {"@03a6000100c80502", 1}, {"@03a7000101a10502", 1}, {"@03a8000100910502", 1}, {"@03a9000100710502", 1}, {"@03aa000100e60502", 1}, {"@03ac000101880502", 1}, {"@03ad000101b20502", 1}, {"@03ae000100870502", 1}, {"@03af0001012c0502", 1}, {"@03b0000101a90502", 1}, {"@03b1000100f00502", 1}, {"@03bc0001008a0502", 1}, {"@03bd000100f90502", 1}, {"@03be000101980502", 1}, {"@03bf000101bc0502", 1}, {"@03c1000100bb0502", 1}, {"@03c40001012b0502", 1}, {"@03c50001015c0502", 1}, {"@03c6000100930502", 1}, {"@03d1000100c20502", 1}, {"@03d2000100e50502", 1}, {"@03d6000101570502", 1}, {"@03d7000101b40502", 1}, {"@03d9000101a50502", 1}, {"@03da000101510502", 1}, {"@03db0001006d0502", 1}, {"@03e6000100ec0502", 1}, {"@03e70001012a0502", 1}, {"@03ec000101830502", 1}, {"@03ed000101a30502", 1}, {"@03ee0001008b0502", 1}, {"@03fa000100d00502", 1}, {"@03fb000101cf0502", 1}, {"@03fc000101470502", 1}, {"@03fd000101580502", 1}, {"@03fe000101a40502", 1}, {"@03ff000100f40502", 1}, {"@04000001006f0502", 1}, {"@0401000100660502", 1}, {"@040c000101590502", 1}, {"@040d000100780502", 1}, {"@040e000100880502", 1}, {"@040f000101500502", 1}, {"@04100001007f0502", 1}, {"@0411000101ab0502", 1}, {"@0415000101bb0502", 1}, {"@0416000100fb0502", 1}, {"@0418000100d80502", 1}, {"@041a000100e00502", 1}, {"@041b000100f10502", 1}, {"@041c000101410502", 1}, {"@041d0001018a0502", 1}, {"@041e0001015f0502", 1}, {"@0429000100700502", 1}, {"@042a0001012d0502", 1}, {"@042b000101af0502", 1}, {"@0436000101940502", 1}, {"@0437000101050502", 1}, {"@043b000103030502", 1}, {"@043c000101cb0502", 1}, {"@043d0001007c0502", 1}, {"@043e000101490502", 1}, {"@043f000101550502", 1}, {"@0440000100ca0502", 1}, {"@044b0001016c0502", 1}, {"@044c0001008e0502", 1}, {"@044d000101930502", 1}, {"@0450000100cf0502", 1}, {"@04510001015e0502", 1}, {"@0452000100730502", 1}, {"@0453000101040502", 1}, {"@0454000101ae0502", 1}, {"@045f000101a80502", 1}, {"@0460000100a50502", 1}, {"@0461000101610502", 1}, {"@0462000100f60502", 1}, {"@0463000101310502", 1}, {"@0464000100c00502", 1}, {"@04650001006e0502", 1}, {"@0469000101640502", 1}, {"@046a000101d00502", 1}, {"@046b000101970502", 1}, {"@046c0001008c0502", 1}, {"@046d000100f30502", 1}, {"@0478000101630502", 1}, {"@0479000100920502", 1}, {"@047a000100600502", 1}, {"@047b000100f50502", 1}, {"@047c000101a00502", 1}, {"@047d0001012e0502", 1}, {"@04800001008d0502", 1}, {"@0483000101b00502", 1}, {"@04850001014c0502", 1}, {"@0486000100fc0502", 1}, {"@0487000101bf0502", 1}, {"@0488000100980502", 1}, {"@0489000100ef0502", 1}, {"@04940001009a0502", 1}, {"@0495000101920502", 1}, {"@0496000100d90502", 1}, {"@04970001007a0502", 1}, {"@04980001014a0502", 1}, {"@0499000100df0502", 1}, {"@049a0001014e0502", 1}, {"@049b000100610502", 1}, {"@049c000101400502", 1}, {"@049d000100ed0502", 1}, {"@049e000101b70502", 1}, {"@04a00001016e0502", 1}, {"@04a10001016f0502", 1}, {"@04a3000101c90502", 1}, {"@04a4000100d40502", 1}, {"@04a5000100740502", 1}, {"@04a6000100a30502", 1}, {"@04a7000101a60502", 1}, {"@04b2000101b90502", 1}, {"@04b3000100dd0502", 1}, {"@04b9000101600502", 1}, {"@04ba0001005d0502", 1}, {"@04c5000101010502", 1}, {"@04c6000101670502", 1}, {"@04c7000100940502", 1}, {"@04cc000100a40502", 1}, {"@04cd000101520502", 1}, {"@04ce000100db0502", 1}, {"@04cf000100e10502", 1}, {"@04d0000101960502", 1}, {"@04d10001009e0502", 1}, {"@04d2000101a70502", 1}, {"@04dd000100a20502", 1}, {"@04de000100ce0502", 1}, {"@04df000100e80502", 1}, {"@04e0000100f70502", 1}, {"@04e1000101be0502", 1}, {"@04e2000101090502", 1}, {"@04e3000101650502", 1}, {"@04e4000101b60502", 1}, {"@04e5000101ad0502", 1}, {"@04e6000100820502", 1}, {"@04e7000101320502", 1}, {"@04e8000101ce0502", 1}, {"@04ec000100770502", 1}, {"@04ed000100620502", 1}, {"@04ee0001014b0502", 1}, {"@04ef0001013b0502", 1}, {"@04fa000101680502", 1}, {"@04fb000101c60502", 1}, {"@04fd0001007b0502", 1}, {"@04fe000100590502", 1}, {"@04ff000101620502", 1}, {"@0500000100e70502", 1}, {"@050b000100990502", 1}, {"@050c000101c10502", 1}, {"@050d000101420502", 1}, {"@050e000100d70502", 1}, {"@0510000101070502", 1}, {"@0511000101950502", 1}, {"@0514000101530502", 1}, {"@05150001005b0502", 1}, {"@0a12000103c90502", 1} } },
+	{"000400000014F200", { {"@0180000000080002", 1}, {"@01810000024b0502", 1}, {"@01810000037d0002", 1}, {"@0181000100440502", 1}, {"@0181000101d40502", 1}, {"@01810100023f0502", 1}, {"@0181010100b40502", 1}, {"@01810201011a0502", 1}, {"@0181030101700502", 1}, {"@0181040103aa0502", 1}, {"@0181050103bf0502", 1}, {"@0182000002400502", 1}, {"@0182000100a80502", 1}, {"@0182000101d80502", 1}, {"@0182000103b20502", 1}, {"@0182010100460502", 1}, {"@0183000002420502", 1}, {"@0183000100450502", 1}, {"@01830101010e0502", 1}, {"@0183020103a80502", 1}, {"@0183030103be0502", 1}, {"@01840000024d0502", 1}, {"@0184050103a90502", 1}, {"@01850001004b0502", 1}, {"@0185020101170502", 1}, {"@0185040101790502", 1}, {"@0186010100af0502", 1}, {"@0186030101750502", 1}, {"@0187000100470502", 1}, {"@0187000103b00502", 1}, {"@0188000002410502", 1}, {"@0188000101120502", 1}, {"@0188000103af0502", 1}, {"@0189000100ab0502", 1}, {"@0189010103b10502", 1}, {"@018a000002450502", 1}, {"@018a000100a90502", 1}, {"@018b000002460502", 1}, {"@018b000101150502", 1}, {"@018c000002430502", 1}, {"@018c0001004c0502", 1}, {"@018c010101180502", 1}, {"@018d0000024c0502", 1}, {"@018d0001010c0502", 1}, {"@018e000002490502", 1}, {"@018e000100490502", 1}, {"@018e010101780502", 1}, {"@018f000100b30502", 1}, {"@018f010101190502", 1}, {"@0190000101710502", 1}, {"@01910001004e0502", 1}, {"@0192000002470502", 1}, {"@01920001010d0502", 1}, {"@0192000103ad0502", 1}, {"@0193000002480502", 1}, {"@0193000101740502", 1}, {"@0193000103ae0502", 1}, {"@01940000024a0502", 1}, {"@0194000100aa0502", 1}, {"@0194000103b60502", 1}, {"@0195000100b00502", 1}, {"@01960000024e0502", 1}, {"@0196000100480502", 1}, {"@0197000101770502", 1}, {"@0198000100b10502", 1}, {"@0199000101160502", 1}, {"@019a000100b70502", 1}, {"@019b000100b60502", 1}, {"@019c000101730502", 1}, {"@019d000100ac0502", 1}, {"@019e000100ad0502", 1}, {"@019f000101110502", 1}, {"@01a00001010f0502", 1}, {"@01a1000101100502", 1}, {"@01a20001017d0502", 1}, {"@01a2000103b90502", 1}, {"@01a30001004a0502", 1}, {"@01a40001004d0502", 1}, {"@01a5000101720502", 1}, {"@01a6000100500502", 1}, {"@01a6000103b70502", 1}, {"@01a7000101140502", 1}, {"@01a80001004f0502", 1}, {"@01a80101017e0502", 1}, {"@01a9000101760502", 1}, {"@01aa000100530502", 1}, {"@01ab0001017c0502", 1}, {"@01ac0001017f0502", 1}, {"@01ad000100b80502", 1}, {"@01ae0001011b0502", 1}, {"@01af0001011c0502", 1}, {"@01b0000100520502", 1}, {"@01b1000100b20502", 1}, {"@01b10101017b0502", 1}, {"@01b3000100b50502", 1}, {"@01b4000101130502", 1}, {"@01b5000100510502", 1}, {"@01b6000100ae0502", 1}, {"@01c1000002440502", 1}, {"@01c1000100540502", 1}, {"@01c10101017a0502", 1}, {"@01c1020103bb0502", 1}, {"@0200000100a10502", 1}, {"@02010001016a0502", 1}, {"@0202000101030502", 1}, {"@02030001019a0502", 1}, {"@0208000100960502", 1}, {"@02090001019f0502", 1}, {"@0214000100e40502", 1}, {"@0215000101820502", 1}, {"@0216000100570502", 1}, {"@0217000101b30502", 1}, {"@02190001007e0502", 1}, {"@021a000100da0502", 1}, {"@021b000100800502", 1}, {"@021d000101cd0502", 1}, {"@021e000101230502", 1}, {"@0220000100fd0502", 1}, {"@02210001013c0502", 1}, {"@0222000101440502", 1}, {"@022d000100f20502", 1}, {"@022e000101d30502", 1}, {"@022f0001011e0502", 1}, {"@0230000101d20502", 1}, {"@02310001006a0502", 1}, {"@0235000100840502", 1}, {"@023c000100bd0502", 1}, {"@023d000101b50502", 1}, {"@023e000100d10502", 1}, {"@023f000101660502", 1}, {"@024a000101d10502", 1}, {"@024b000101260502", 1}, {"@024f000100810502", 1}, {"@0251000100c10502", 1}, {"@0252000100fe0502", 1}, {"@025d000100550502", 1}, {"@025e000101250502", 1}, {"@025f000101c50502", 1}, {"@025f000101d70502", 1}, {"@0260000100d20502", 1}, {"@0261000100650502", 1}, {"@0262000101370502", 1}, {"@0263000100750502", 1}, {"@0264000101ac0502", 1}, {"@0265000101540502", 1}, {"@0266000100680502", 1}, {"@0267000101080502", 1}, {"@02680001007d0502", 1}, {"@02690001011f0502", 1}, {"@026a000101460502", 1}, {"@026b000100e90502", 1}, {"@026c000100c30502", 1}, {"@026d0001013f0502", 1}, {"@026e000100ba0502", 1}, {"@026f000101900502", 1}, {"@0270000100ff0502", 1}, {"@02710001019b0502", 1}, {"@0272000101860502", 1}, {"@027d000100630502", 1}, {"@027e000101690502", 1}, {"@027f000100b90502", 1}, {"@0280000100830502", 1}, {"@0281000101200502", 1}, {"@0282000101810502", 1}, {"@0282000101d60502", 1}, {"@0283000100c70502", 1}, {"@02870001005a0502", 1}, {"@028b000100e30502", 1}, {"@028c0001013e0502", 1}, {"@028d000101bd0502", 1}, {"@028e0001019e0502", 1}, {"@0299000100950502", 1}, {"@029a000100ee0502", 1}, {"@029b000100cb0502", 1}, {"@029e0001013d0502", 1}, {"@02a2000101ba0502", 1}, {"@02a4000100720502", 1}, {"@02a50001018c0502", 1}, {"@02a6000101240502", 1}, {"@02b1000100690502", 1}, {"@02b2000100c40502", 1}, {"@02b80001019c0502", 1}, {"@02c3000100dc0502", 1}, {"@02c4000100670502", 1}, {"@02c7000101220502", 1}, {"@02c9000100cd0502", 1}, {"@02ca000101ca0502", 1}, {"@02cb000101360502", 1}, {"@02d6000100560502", 1}, {"@02d7000101300502", 1}, {"@02d8000100e20502", 1}, {"@02d9000101c80502", 1}, {"@02da000101330502", 1}, {"@02db0001005e0502", 1}, {"@02dc000100be0502", 1}, {"@02dd000100ea0502", 1}, {"@02de0001009c0502", 1}, {"@02df000101910502", 1}, {"@02ea000101800502", 1}, {"@02ea000101d50502", 1}, {"@02eb000100de0502", 1}, {"@02ec000101c40502", 1}, {"@02ed0001015a0502", 1}, {"@02ee000101990502", 1}, {"@02ef000100580502", 1}, {"@02f0000100a70502", 1}, {"@02f1000101450502", 1}, {"@02f2000100cc0502", 1}, {"@02f4000103050502", 1}, {"@02f8000101380502", 1}, {"@02f9000101020502", 1}, {"@02fa000100970502", 1}, {"@02fb000100900502", 1}, {"@02fc0001018f0502", 1}, {"@0307000100640502", 1}, {"@03080001014d0502", 1}, {"@0309000100c60502", 1}, {"@030a000101c70502", 1}, {"@030b000100790502", 1}, {"@030c000101b80502", 1}, {"@030d000101840502", 1}, {"@030e0001012f0502", 1}, {"@030f0001016d0502", 1}, {"@0310000100f80502", 1}, {"@0311000100d60502", 1}, {"@0313000101210502", 1}, {"@0316000101c00502", 1}, {"@0317000100a60502", 1}, {"@03180001006c0502", 1}, {"@0323000100760502", 1}, {"@0324000101890502", 1}, {"@03250001010a0502", 1}, {"@0326000101390502", 1}, {"@0327000101c30502", 1}, {"@03290001009d0502", 1}, {"@032c000101480502", 1}, {"@032d000100bc0502", 1}, {"@03380001011d0502", 1}, {"@0339000101b10502", 1}, {"@033a000101cc0502", 1}, {"@033b000100fa0502", 1}, {"@033c000101000502", 1}, {"@033d0001013a0502", 1}, {"@033e000101a20502", 1}, {"@033f0001008f0502", 1}, {"@0342000101280502", 1}, {"@0344000100c50502", 1}, {"@03450001005f0502", 1}, {"@03480001006b0502", 1}, {"@03490001018d0502", 1}, {"@034a000101430502", 1}, {"@034b0001009f0502", 1}, {"@0356000101350502", 1}, {"@0357000100eb0502", 1}, {"@035a000100850502", 1}, {"@035c000101290502", 1}, {"@035d000100c90502", 1}, {"@035e0001018e0502", 1}, {"@0369000100d30502", 1}, {"@036a0001019d0502", 1}, {"@036b0001018b0502", 1}, {"@03700001015d0502", 1}, {"@03710001005c0502", 1}, {"@03720001010b0502", 1}, {"@0373000101340502", 1}, {"@037e000101560502", 1}, {"@037f000101aa0502", 1}, {"@0380000101870502", 1}, {"@0381000100d50502", 1}, {"@03820001016b0502", 1}, {"@03830001009b0502", 1}, {"@0384000100860502", 1}, {"@0385000101060502", 1}, {"@0390000101850502", 1}, {"@0392000101270502", 1}, {"@0393000100a00502", 1}, {"@0394000100890502", 1}, {"@0398000100bf0502", 1}, {"@0399000101c20502", 1}, {"@03a40001014f0502", 1}, {"@03a50001015b0502", 1}, {"@03a6000100c80502", 1}, {"@03a7000101a10502", 1}, {"@03a8000100910502", 1}, {"@03a9000100710502", 1}, {"@03aa000100e60502", 1}, {"@03ac000101880502", 1}, {"@03ad000101b20502", 1}, {"@03ae000100870502", 1}, {"@03af0001012c0502", 1}, {"@03b0000101a90502", 1}, {"@03b1000100f00502", 1}, {"@03bc0001008a0502", 1}, {"@03bd000100f90502", 1}, {"@03be000101980502", 1}, {"@03bf000101bc0502", 1}, {"@03c1000100bb0502", 1}, {"@03c40001012b0502", 1}, {"@03c50001015c0502", 1}, {"@03c6000100930502", 1}, {"@03d1000100c20502", 1}, {"@03d2000100e50502", 1}, {"@03d6000101570502", 1}, {"@03d7000101b40502", 1}, {"@03d9000101a50502", 1}, {"@03da000101510502", 1}, {"@03db0001006d0502", 1}, {"@03e6000100ec0502", 1}, {"@03e70001012a0502", 1}, {"@03ec000101830502", 1}, {"@03ed000101a30502", 1}, {"@03ee0001008b0502", 1}, {"@03fa000100d00502", 1}, {"@03fb000101cf0502", 1}, {"@03fc000101470502", 1}, {"@03fd000101580502", 1}, {"@03fe000101a40502", 1}, {"@03ff000100f40502", 1}, {"@04000001006f0502", 1}, {"@0401000100660502", 1}, {"@040c000101590502", 1}, {"@040d000100780502", 1}, {"@040e000100880502", 1}, {"@040f000101500502", 1}, {"@04100001007f0502", 1}, {"@0411000101ab0502", 1}, {"@0415000101bb0502", 1}, {"@0416000100fb0502", 1}, {"@0418000100d80502", 1}, {"@041a000100e00502", 1}, {"@041b000100f10502", 1}, {"@041c000101410502", 1}, {"@041d0001018a0502", 1}, {"@041e0001015f0502", 1}, {"@0429000100700502", 1}, {"@042a0001012d0502", 1}, {"@042b000101af0502", 1}, {"@0436000101940502", 1}, {"@0437000101050502", 1}, {"@043b000103030502", 1}, {"@043c000101cb0502", 1}, {"@043d0001007c0502", 1}, {"@043e000101490502", 1}, {"@043f000101550502", 1}, {"@0440000100ca0502", 1}, {"@044b0001016c0502", 1}, {"@044c0001008e0502", 1}, {"@044d000101930502", 1}, {"@0450000100cf0502", 1}, {"@04510001015e0502", 1}, {"@0452000100730502", 1}, {"@0453000101040502", 1}, {"@0454000101ae0502", 1}, {"@045f000101a80502", 1}, {"@0460000100a50502", 1}, {"@0461000101610502", 1}, {"@0462000100f60502", 1}, {"@0463000101310502", 1}, {"@0464000100c00502", 1}, {"@04650001006e0502", 1}, {"@0469000101640502", 1}, {"@046a000101d00502", 1}, {"@046b000101970502", 1}, {"@046c0001008c0502", 1}, {"@046d000100f30502", 1}, {"@0478000101630502", 1}, {"@0479000100920502", 1}, {"@047a000100600502", 1}, {"@047b000100f50502", 1}, {"@047c000101a00502", 1}, {"@047d0001012e0502", 1}, {"@04800001008d0502", 1}, {"@0483000101b00502", 1}, {"@04850001014c0502", 1}, {"@0486000100fc0502", 1}, {"@0487000101bf0502", 1}, {"@0488000100980502", 1}, {"@0489000100ef0502", 1}, {"@04940001009a0502", 1}, {"@0495000101920502", 1}, {"@0496000100d90502", 1}, {"@04970001007a0502", 1}, {"@04980001014a0502", 1}, {"@0499000100df0502", 1}, {"@049a0001014e0502", 1}, {"@049b000100610502", 1}, {"@049c000101400502", 1}, {"@049d000100ed0502", 1}, {"@049e000101b70502", 1}, {"@04a00001016e0502", 1}, {"@04a10001016f0502", 1}, {"@04a3000101c90502", 1}, {"@04a4000100d40502", 1}, {"@04a5000100740502", 1}, {"@04a6000100a30502", 1}, {"@04a7000101a60502", 1}, {"@04b2000101b90502", 1}, {"@04b3000100dd0502", 1}, {"@04b9000101600502", 1}, {"@04ba0001005d0502", 1}, {"@04c5000101010502", 1}, {"@04c6000101670502", 1}, {"@04c7000100940502", 1}, {"@04cc000100a40502", 1}, {"@04cd000101520502", 1}, {"@04ce000100db0502", 1}, {"@04cf000100e10502", 1}, {"@04d0000101960502", 1}, {"@04d10001009e0502", 1}, {"@04d2000101a70502", 1}, {"@04dd000100a20502", 1}, {"@04de000100ce0502", 1}, {"@04df000100e80502", 1}, {"@04e0000100f70502", 1}, {"@04e1000101be0502", 1}, {"@04e2000101090502", 1}, {"@04e3000101650502", 1}, {"@04e4000101b60502", 1}, {"@04e5000101ad0502", 1}, {"@04e6000100820502", 1}, {"@04e7000101320502", 1}, {"@04e8000101ce0502", 1}, {"@04ec000100770502", 1}, {"@04ed000100620502", 1}, {"@04ee0001014b0502", 1}, {"@04ef0001013b0502", 1}, {"@04fa000101680502", 1}, {"@04fb000101c60502", 1}, {"@04fd0001007b0502", 1}, {"@04fe000100590502", 1}, {"@04ff000101620502", 1}, {"@0500000100e70502", 1}, {"@050b000100990502", 1}, {"@050c000101c10502", 1}, {"@050d000101420502", 1}, {"@050e000100d70502", 1}, {"@0510000101070502", 1}, {"@0511000101950502", 1}, {"@0514000101530502", 1}, {"@05150001005b0502", 1}, {"@0a12000103c90502", 1} } },
+	{"00040000001BB200", { {"@05c0000000060002", 1}, {"@05c0000003651302", 1}, {"@05c0000004121302", 1}, {"@05c00000043a1302", 1}, {"@05c00000043b1302", 1}, {"@05c00100001d0002", 1}, {"@05c1000003661302", 1} } },
+	{"00040000001BFB00", { {"@05c0000000060002", 1}, {"@05c0000003651302", 1}, {"@05c0000004121302", 1}, {"@05c00000043a1302", 1}, {"@05c00000043b1302", 1}, {"@05c00100001d0002", 1}, {"@05c1000003661302", 1} } },
+	{"00040000001BFC00", { {"@05c0000000060002", 1}, {"@05c0000003651302", 1}, {"@05c0000004121302", 1}, {"@05c00000043a1302", 1}, {"@05c00000043b1302", 1}, {"@05c00100001d0002", 1}, {"@05c1000003661302", 1} } },
+	{"0005000010116400", { {"@08010000025d0402", 1}, {"@08020000025e0402", 1} } },
+	{"0004000000188B00", { {"@09c0010102690e02", 1}, {"@09c00201026a0e02", 1}, {"@09c00301026b0e02", 1}, {"@09c00401026c0e02", 1}, {"@09c00501026d0e02", 1}, {"@09c10101026e0e02", 1}, {"@09c10201026f0e02", 1}, {"@09c1030102700e02", 1}, {"@09c1040102710e02", 1}, {"@09c1050102720e02", 1}, {"@09c2010102730e02", 1}, {"@09c2020102740e02", 1}, {"@09c2030102750e02", 1}, {"@09c2040102760e02", 1}, {"@09c2050102770e02", 1}, {"@09c3010102780e02", 1}, {"@09c3020102790e02", 1}, {"@09c30301027a0e02", 1}, {"@09c30401027b0e02", 1}, {"@09c30501027c0e02", 1}, {"@09c40101027d0e02", 1}, {"@09c40201027e0e02", 1}, {"@09c40301027f0e02", 1}, {"@09c4040102800e02", 1}, {"@09c4050102810e02", 1}, {"@09c5010102820e02", 1}, {"@09c5020102830e02", 1}, {"@09c5030102840e02", 1}, {"@09c5040102850e02", 1}, {"@09c5050102860e02", 1}, {"@09c6010102870e02", 1}, {"@09c6020102880e02", 1}, {"@09c6030102890e02", 1}, {"@09c60401028a0e02", 1}, {"@09c60501028b0e02", 1}, {"@09c70101028c0e02", 1}, {"@09c70201028d0e02", 1}, {"@09c70301028e0e02", 1}, {"@09c70401028f0e02", 1}, {"@09c7050102900e02", 1}, {"@09c8010102910e02", 1}, {"@09c8020102920e02", 1}, {"@09c8030102930e02", 1}, {"@09c8040102940e02", 1}, {"@09c8050102950e02", 1}, {"@09c9010102960e02", 1}, {"@09c9020102970e02", 1}, {"@09c9030102980e02", 1}, {"@09c9040102990e02", 1}, {"@09c90501029a0e02", 1}, {"@09ca0101029b0e02", 1}, {"@09ca0201029c0e02", 1}, {"@09ca0301029d0e02", 1}, {"@09ca0401029e0e02", 1}, {"@09ca0501029f0e02", 1}, {"@09cb010102a00e02", 1}, {"@09cb020102a10e02", 1}, {"@09cb030102a20e02", 1}, {"@09cb040102a30e02", 1}, {"@09cb050102a40e02", 1}, {"@09cc010102a50e02", 1}, {"@09cc020102a60e02", 1}, {"@09cc030102a70e02", 1}, {"@09cc040102a80e02", 1}, {"@09cc050102a90e02", 1}, {"@09cd010102aa0e02", 1}, {"@09cd020102ab0e02", 1}, {"@09cd030102ac0e02", 1}, {"@09cd040102ad0e02", 1}, {"@09cd050102ae0e02", 1}, {"@09ce010102af0e02", 1}, {"@09ce020102b00e02", 1}, {"@09ce030102b10e02", 1}, {"@09ce040102b20e02", 1}, {"@09ce050102b30e02", 1}, {"@09cf010102b40e02", 1}, {"@09cf020102b50e02", 1}, {"@09cf030102b60e02", 1}, {"@09cf040102b70e02", 1}, {"@09cf050102b80e02", 1}, {"@09d0010102b90e02", 1}, {"@09d0020102ba0e02", 1}, {"@09d0030102bb0e02", 1}, {"@09d0040102bc0e02", 1}, {"@09d0050102bd0e02", 1}, {"@09d1010102be0e02", 1}, {"@09d1020102bf0e02", 1}, {"@09d1030102c00e02", 1}, {"@09d1040102c10e02", 1}, {"@09d1050102c20e02", 1} } },
+	{"0004000000188C00", { {"@09c0010102690e02", 1}, {"@09c00201026a0e02", 1}, {"@09c00301026b0e02", 1}, {"@09c00401026c0e02", 1}, {"@09c00501026d0e02", 1}, {"@09c10101026e0e02", 1}, {"@09c10201026f0e02", 1}, {"@09c1030102700e02", 1}, {"@09c1040102710e02", 1}, {"@09c1050102720e02", 1}, {"@09c2010102730e02", 1}, {"@09c2020102740e02", 1}, {"@09c2030102750e02", 1}, {"@09c2040102760e02", 1}, {"@09c2050102770e02", 1}, {"@09c3010102780e02", 1}, {"@09c3020102790e02", 1}, {"@09c30301027a0e02", 1}, {"@09c30401027b0e02", 1}, {"@09c30501027c0e02", 1}, {"@09c40101027d0e02", 1}, {"@09c40201027e0e02", 1}, {"@09c40301027f0e02", 1}, {"@09c4040102800e02", 1}, {"@09c4050102810e02", 1}, {"@09c5010102820e02", 1}, {"@09c5020102830e02", 1}, {"@09c5030102840e02", 1}, {"@09c5040102850e02", 1}, {"@09c5050102860e02", 1}, {"@09c6010102870e02", 1}, {"@09c6020102880e02", 1}, {"@09c6030102890e02", 1}, {"@09c60401028a0e02", 1}, {"@09c60501028b0e02", 1}, {"@09c70101028c0e02", 1}, {"@09c70201028d0e02", 1}, {"@09c70301028e0e02", 1}, {"@09c70401028f0e02", 1}, {"@09c7050102900e02", 1}, {"@09c8010102910e02", 1}, {"@09c8020102920e02", 1}, {"@09c8030102930e02", 1}, {"@09c8040102940e02", 1}, {"@09c8050102950e02", 1}, {"@09c9010102960e02", 1}, {"@09c9020102970e02", 1}, {"@09c9030102980e02", 1}, {"@09c9040102990e02", 1}, {"@09c90501029a0e02", 1}, {"@09ca0101029b0e02", 1}, {"@09ca0201029c0e02", 1}, {"@09ca0301029d0e02", 1}, {"@09ca0401029e0e02", 1}, {"@09ca0501029f0e02", 1}, {"@09cb010102a00e02", 1}, {"@09cb020102a10e02", 1}, {"@09cb030102a20e02", 1}, {"@09cb040102a30e02", 1}, {"@09cb050102a40e02", 1}, {"@09cc010102a50e02", 1}, {"@09cc020102a60e02", 1}, {"@09cc030102a70e02", 1}, {"@09cc040102a80e02", 1}, {"@09cc050102a90e02", 1}, {"@09cd010102aa0e02", 1}, {"@09cd020102ab0e02", 1}, {"@09cd030102ac0e02", 1}, {"@09cd040102ad0e02", 1}, {"@09cd050102ae0e02", 1}, {"@09ce010102af0e02", 1}, {"@09ce020102b00e02", 1}, {"@09ce030102b10e02", 1}, {"@09ce040102b20e02", 1}, {"@09ce050102b30e02", 1}, {"@09cf010102b40e02", 1}, {"@09cf020102b50e02", 1}, {"@09cf030102b60e02", 1}, {"@09cf040102b70e02", 1}, {"@09cf050102b80e02", 1}, {"@09d0010102b90e02", 1}, {"@09d0020102ba0e02", 1}, {"@09d0030102bb0e02", 1}, {"@09d0040102bc0e02", 1}, {"@09d0050102bd0e02", 1}, {"@09d1010102be0e02", 1}, {"@09d1020102bf0e02", 1}, {"@09d1030102c00e02", 1}, {"@09d1040102c10e02", 1}, {"@09d1050102c20e02", 1} } },
+	{"0004000000188D00", { {"@09c0010102690e02", 1}, {"@09c00201026a0e02", 1}, {"@09c00301026b0e02", 1}, {"@09c00401026c0e02", 1}, {"@09c00501026d0e02", 1}, {"@09c10101026e0e02", 1}, {"@09c10201026f0e02", 1}, {"@09c1030102700e02", 1}, {"@09c1040102710e02", 1}, {"@09c1050102720e02", 1}, {"@09c2010102730e02", 1}, {"@09c2020102740e02", 1}, {"@09c2030102750e02", 1}, {"@09c2040102760e02", 1}, {"@09c2050102770e02", 1}, {"@09c3010102780e02", 1}, {"@09c3020102790e02", 1}, {"@09c30301027a0e02", 1}, {"@09c30401027b0e02", 1}, {"@09c30501027c0e02", 1}, {"@09c40101027d0e02", 1}, {"@09c40201027e0e02", 1}, {"@09c40301027f0e02", 1}, {"@09c4040102800e02", 1}, {"@09c4050102810e02", 1}, {"@09c5010102820e02", 1}, {"@09c5020102830e02", 1}, {"@09c5030102840e02", 1}, {"@09c5040102850e02", 1}, {"@09c5050102860e02", 1}, {"@09c6010102870e02", 1}, {"@09c6020102880e02", 1}, {"@09c6030102890e02", 1}, {"@09c60401028a0e02", 1}, {"@09c60501028b0e02", 1}, {"@09c70101028c0e02", 1}, {"@09c70201028d0e02", 1}, {"@09c70301028e0e02", 1}, {"@09c70401028f0e02", 1}, {"@09c7050102900e02", 1}, {"@09c8010102910e02", 1}, {"@09c8020102920e02", 1}, {"@09c8030102930e02", 1}, {"@09c8040102940e02", 1}, {"@09c8050102950e02", 1}, {"@09c9010102960e02", 1}, {"@09c9020102970e02", 1}, {"@09c9030102980e02", 1}, {"@09c9040102990e02", 1}, {"@09c90501029a0e02", 1}, {"@09ca0101029b0e02", 1}, {"@09ca0201029c0e02", 1}, {"@09ca0301029d0e02", 1}, {"@09ca0401029e0e02", 1}, {"@09ca0501029f0e02", 1}, {"@09cb010102a00e02", 1}, {"@09cb020102a10e02", 1}, {"@09cb030102a20e02", 1}, {"@09cb040102a30e02", 1}, {"@09cb050102a40e02", 1}, {"@09cc010102a50e02", 1}, {"@09cc020102a60e02", 1}, {"@09cc030102a70e02", 1}, {"@09cc040102a80e02", 1}, {"@09cc050102a90e02", 1}, {"@09cd010102aa0e02", 1}, {"@09cd020102ab0e02", 1}, {"@09cd030102ac0e02", 1}, {"@09cd040102ad0e02", 1}, {"@09cd050102ae0e02", 1}, {"@09ce010102af0e02", 1}, {"@09ce020102b00e02", 1}, {"@09ce030102b10e02", 1}, {"@09ce040102b20e02", 1}, {"@09ce050102b30e02", 1}, {"@09cf010102b40e02", 1}, {"@09cf020102b50e02", 1}, {"@09cf030102b60e02", 1}, {"@09cf040102b70e02", 1}, {"@09cf050102b80e02", 1}, {"@09d0010102b90e02", 1}, {"@09d0020102ba0e02", 1}, {"@09d0030102bb0e02", 1}, {"@09d0040102bc0e02", 1}, {"@09d0050102bd0e02", 1}, {"@09d1010102be0e02", 1}, {"@09d1020102bf0e02", 1}, {"@09d1030102c00e02", 1}, {"@09d1040102c10e02", 1}, {"@09d1050102c20e02", 1} } },
+	{"00040000001C1E00", { {"@1d01000003750d02", 1} } },
+	{"00040000001B5300", { {"@1f000000000a0002", 1}, {"@1f00000002540c02", 1}, {"@1f01000000270002", 1}, {"@1f01000002550c02", 1}, {"@1f02000000280002", 1}, {"@1f02000002560c02", 1}, {"@1f03000002570c02", 1}, {"@1f400000035e1002", 1} } },
+	{"00040000001B5400", { {"@1f000000000a0002", 1}, {"@1f00000002540c02", 1}, {"@1f01000000270002", 1}, {"@1f01000002550c02", 1}, {"@1f02000000280002", 1}, {"@1f02000002560c02", 1}, {"@1f03000002570c02", 1}, {"@1f400000035e1002", 1} } },
+	{"00040000001C2000", { {"@1f000000000a0002", 1}, {"@1f00000002540c02", 1}, {"@1f01000000270002", 1}, {"@1f01000002550c02", 1}, {"@1f02000000280002", 1}, {"@1f02000002560c02", 1}, {"@1f03000002570c02", 1}, {"@1f400000035e1002", 1} } },
+	{"00040000001C2100", { {"@1f000000000a0002", 1}, {"@1f00000002540c02", 1}, {"@1f01000000270002", 1}, {"@1f01000002550c02", 1}, {"@1f02000000280002", 1}, {"@1f02000002560c02", 1}, {"@1f03000002570c02", 1}, {"@1f400000035e1002", 1} } },
+	{"0004000000196F00", { {"@1f000000000a0002", 1}, {"@1f00000002540c02", 1}, {"@1f01000000270002", 1}, {"@1f01000002550c02", 1}, {"@1f02000000280002", 1}, {"@1f02000002560c02", 1}, {"@1f03000002570c02", 1} } },
+	{"00040000001D1E00", { {"@1f000000000a0002", 1}, {"@1f00000002540c02", 1}, {"@1f01000000270002", 1}, {"@1f01000002550c02", 1}, {"@1f02000000280002", 1}, {"@1f02000002560c02", 1}, {"@1f03000002570c02", 1} } },
+	{"00040000001D1F00", { {"@1f000000000a0002", 1}, {"@1f00000002540c02", 1}, {"@1f01000000270002", 1}, {"@1f01000002550c02", 1}, {"@1f02000000280002", 1}, {"@1f02000002560c02", 1}, {"@1f03000002570c02", 1} } },
+	{"00040000001AB800", { {"@1f000000000a0002", 1}, {"@1f00000002540c02", 1}, {"@1f01000000270002", 1}, {"@1f01000002550c02", 1}, {"@1f02000000280002", 1}, {"@1f02000002560c02", 1}, {"@1f03000002570c02", 1}, {"@1f400000035e1002", 1} } },
+	{"00040000001AB900", { {"@1f000000000a0002", 1}, {"@1f00000002540c02", 1}, {"@1f01000000270002", 1}, {"@1f01000002550c02", 1}, {"@1f02000000280002", 1}, {"@1f02000002560c02", 1}, {"@1f03000002570c02", 1}, {"@1f400000035e1002", 1} } },
+	{"0004000000132500", { {"@21000000000b0002", 1}, {"@2101000000180002", 1}, {"@2102000000290002", 1}, {"@21030000002a0002", 1} } },
+	{"00040000001B4000", { {"@21000000000b0002", 1}, {"@2101000000180002", 1}, {"@2102000000290002", 1}, {"@21030000002a0002", 1}, {"@2104000002520002", 1}, {"@21050000025a0002", 1}, {"@2105010003630002", 1}, {"@2106000003601202", 1}, {"@2107000003611202", 1} } },
+	{"00040000001B4100", { {"@21000000000b0002", 1}, {"@2101000000180002", 1}, {"@2102000000290002", 1}, {"@21030000002a0002", 1}, {"@2104000002520002", 1}, {"@21050000025a0002", 1}, {"@2105010003630002", 1}, {"@2106000003601202", 1}, {"@2107000003611202", 1} } },
+	{"0004000000179400", { {"@21000000000b0002", 1}, {"@2101000000180002", 1}, {"@2102000000290002", 1}, {"@21030000002a0002", 1} } },
+	{"0004000000179500", { {"@21000000000b0002", 1}, {"@2101000000180002", 1}, {"@2102000000290002", 1}, {"@21030000002a0002", 1} } },
+	{"0004000000179600", { {"@21000000000b0002", 1}, {"@2101000000180002", 1}, {"@2102000000290002", 1}, {"@21030000002a0002", 1} } },
+	{"0004000000179700", { {"@21000000000b0002", 1}, {"@2101000000180002", 1}, {"@2102000000290002", 1}, {"@21030000002a0002", 1} } },
+	{"0004000000179800", { {"@21000000000b0002", 1}, {"@2101000000180002", 1}, {"@2102000000290002", 1}, {"@21030000002a0002", 1} } },
+	{"000400000017A800", { {"@21000000000b0002", 1}, {"@2101000000180002", 1}, {"@2102000000290002", 1}, {"@21030000002a0002", 1} } },
+	{"000400000F70CC00", { {"@21000000000b0002", 1}, {"@2101000000180002", 1}, {"@2102000000290002", 1}, {"@21030000002a0002", 1}, {"@2104000002520002", 1}, {"@21050000025a0002", 1}, {"@2105010003630002", 1}, {"@2106000003601202", 1}, {"@2107000003611202", 1}, {"@21080000036f1202", 1}, {"@2108000003880002", 1}, {"@2109000003701202", 1} } },
+	{"000400000F70CD00", { {"@21000000000b0002", 1}, {"@2101000000180002", 1}, {"@2102000000290002", 1}, {"@21030000002a0002", 1}, {"@2104000002520002", 1}, {"@21050000025a0002", 1}, {"@2105010003630002", 1}, {"@2106000003601202", 1}, {"@2107000003611202", 1}, {"@21080000036f1202", 1}, {"@2108000003880002", 1}, {"@2109000003701202", 1} } },
+	{"000400000F700100", { {"@22400000002b0002", 1} } },
+	{"000400000F700200", { {"@22400000002b0002", 1} } },
+	{"0004000000174100", { {"@3480000000310002", 1}, {"@3480000002580002", 1}, {"@3480000003791502", 1} } },
+	{"000400000016E100", { {"@3500010002e10f02", 1}, {"@3500020002e20f02", 1}, {"@3501000002e30f02", 1}, {"@3502010002e40f02", 1}, {"@3503010002e50f02", 1}, {"@3504010002e60f02", 1} } },
+	{"00040000001BC500", { {"@3500010002e10f02", 1}, {"@3500020002e20f02", 1}, {"@3501000002e30f02", 1}, {"@3502010002e40f02", 1}, {"@3503010002e50f02", 1}, {"@3504010002e60f02", 1} } },
+	{"00040000001BC600", { {"@3500010002e10f02", 1}, {"@3500020002e20f02", 1}, {"@3501000002e30f02", 1}, {"@3502010002e40f02", 1}, {"@3503010002e50f02", 1}, {"@3504010002e60f02", 1} } },
+	{"00040000001A6E00", { {"@35c0000002500a02", 1}, {"@35c0000003920a02", 1} } },
+	{"0004000000119A00", { {"@35c0000002500a02", 1}, {"@35c0000003920a02", 1}, {"@35c10000036c0a02", 1}, {"@35c20000036d0a02", 1}, {"@35c30000036e0a02", 1} } },
+	{"000400000012CB00", { {"@35c0000002500a02", 1}, {"@35c0000003920a02", 1}, {"@35c10000036c0a02", 1}, {"@35c20000036d0a02", 1}, {"@35c30000036e0a02", 1} } },
+	{"000400000017C900", { {"@35c0000002500a02", 1}, {"@35c0000003920a02", 1}, {"@35c10000036c0a02", 1}, {"@35c20000036d0a02", 1}, {"@35c30000036e0a02", 1} } },
+	{"000400000017E100", { {"@35c0000002500a02", 1}, {"@35c0000003920a02", 1}, {"@35c10000036c0a02", 1}, {"@35c20000036d0a02", 1}, {"@35c30000036e0a02", 1} } },
+	{"0004000000196900", { {"@35c0000002500a02", 1}, {"@35c0000003920a02", 1}, {"@35c10000036c0a02", 1}, {"@35c20000036d0a02", 1}, {"@35c30000036e0a02", 1} } }
+};
+
+static std::map<std::string, QAction*> amiibos_actions;
+static std::map<std::string, QAction*> amiibos_file_actions;
 
 GMainWindow::GMainWindow(Core::System& system_)
     : ui{std::make_unique<Ui::MainWindow>()}, system{system_}, movie{system.Movie()},
@@ -346,6 +1507,8 @@ GMainWindow::GMainWindow(Core::System& system_)
     Camera::RegisterFactory("image", std::make_unique<Camera::StillImageCameraFactory>());
     Camera::RegisterFactory("qt", std::make_unique<Camera::QtMultimediaCameraFactory>(qt_cameras));
 
+    system.RegisterInfoLEDColorChanged([this]() { emit InfoLEDColorChanged(); });
+
     LoadTranslation();
 
     Pica::g_debug_context = Pica::DebugContext::Construct();
@@ -358,7 +1521,7 @@ GMainWindow::GMainWindow(Core::System& system_)
 
 #ifdef USE_DISCORD_PRESENCE
     SetDiscordEnabled(UISettings::values.enable_discord_presence.GetValue());
-    discord_rpc->Update();
+    discord_rpc->Update(false);
 #endif
 
     play_time_manager = std::make_unique<PlayTime::PlayTimeManager>();
@@ -374,6 +1537,8 @@ GMainWindow::GMainWindow(Core::System& system_)
     InitializeRecentFileMenuActions();
     InitializeSaveStateMenuActions();
     InitializeHotkeys();
+    InitializeAmiibos();
+	
 
     SetDefaultUIGeometry();
     RestoreUIState();
@@ -400,7 +1565,7 @@ GMainWindow::GMainWindow(Core::System& system_)
         } else if (caps.avx2) {
             cpu_string += '2';
         }
-        if (caps.fma || caps.fma4) {
+        if (caps.fma) {
             cpu_string += " | FMA";
         }
     }
@@ -419,6 +1584,19 @@ GMainWindow::GMainWindow(Core::System& system_)
 
     show();
 
+#ifdef __APPLE__
+    if (AppleUtils::IsRunningFromTerminal()) {
+        QMessageBox::warning(
+            this, tr("Warning"),
+            tr("The `azahar` executable is being run directly rather than via the Azahar.app "
+               "bundle.\n\n"
+               "When run this way, the app may be missing certain functionality such as camera "
+               "emulation.\n\n"
+               "It is recommended to instead run Azahar using the `open` command, e.g.:\n"
+               "`open ./Azahar.app`"));
+    }
+#endif
+
 #ifdef ENABLE_QT_UPDATE_CHECKER
     if (UISettings::values.check_for_update_on_start) {
         update_future = QtConcurrent::run([]() -> QString {
@@ -426,7 +1604,11 @@ GMainWindow::GMainWindow(Core::System& system_)
                 UpdateChecker::GetLatestRelease(ShouldCheckForPrereleaseUpdates());
 
             if (latest_release_tag && latest_release_tag.value() != Common::g_build_fullname) {
-                return QString::fromStdString(latest_release_tag.value());
+                const int latest_major_version = GetMajorVersion(latest_release_tag.value());
+                const int current_major_version = GetMajorVersion(Common::g_build_fullname);
+                if (current_major_version <= latest_major_version) {
+                    return QString::fromStdString(latest_release_tag.value());
+                }
             }
             return QString{};
         });
@@ -436,33 +1618,16 @@ GMainWindow::GMainWindow(Core::System& system_)
     }
 #endif
 
-    game_list->LoadCompatibilityList();
-    game_list->PopulateAsync(UISettings::values.game_dirs);
-
     mouse_hide_timer.setInterval(default_mouse_timeout);
     connect(&mouse_hide_timer, &QTimer::timeout, this, &GMainWindow::HideMouseCursor);
     connect(ui->menubar, &QMenuBar::hovered, this, &GMainWindow::OnMouseActivity);
 
 #ifdef ENABLE_OPENGL
     gl_renderer = GetOpenGLRenderer();
-#if defined(_WIN32)
-    if (gl_renderer.startsWith(QStringLiteral("D3D12"))) {
-        // OpenGLOn12 supports but does not yet advertise OpenGL 4.0+
-        // We can override the version here to allow Citra to work.
-        // TODO: Remove this when OpenGL 4.0+ is advertised.
-        qputenv("MESA_GL_VERSION_OVERRIDE", "4.6");
-    }
-#endif
 #endif
 
 #ifdef ENABLE_VULKAN
     physical_devices = GetVulkanPhysicalDevices();
-    if (physical_devices.empty()) {
-        QMessageBox::warning(this, tr("No Suitable Vulkan Devices Detected"),
-                             tr("Vulkan initialization failed during boot.<br/>"
-                                "Your GPU may not support Vulkan 1.1, or you do not "
-                                "have the latest graphics driver."));
-    }
 #endif
 
     if (!game_path.isEmpty()) {
@@ -600,6 +1765,20 @@ void GMainWindow::InitializeWidgets() {
     statusBar()->addPermanentWidget(multiplayer_state->GetStatusText());
     statusBar()->addPermanentWidget(multiplayer_state->GetStatusIcon());
 
+    QFrame* sep = new QFrame(this);
+    sep->setFrameShape(QFrame::VLine);
+    sep->setFrameShadow(QFrame::Sunken);
+    sep->setFixedHeight(16);
+    statusBar()->addPermanentWidget(sep);
+
+    notification_led = new LedWidget();
+    notification_led->setToolTip(tr("Emulated notification LED"));
+    statusBar()->addPermanentWidget(notification_led);
+    connect(this, &GMainWindow::InfoLEDColorChanged, this, [this] {
+        auto led_color = system.GetInfoLEDColor();
+        notification_led->setColor(QColor(led_color.r(), led_color.g(), led_color.b()));
+    });
+
     statusBar()->setVisible(true);
 
     // Removes an ugly inner border from the status bar widgets under Linux
@@ -635,11 +1814,6 @@ void GMainWindow::InitializeDebugWidgets() {
     microProfileDialog = new MicroProfileDialog(this);
     microProfileDialog->hide();
     debug_menu->addAction(microProfileDialog->toggleViewAction());
-#else
-    auto micro_profile_stub = new QAction(tr("MicroProfile (unavailable)"), this);
-    micro_profile_stub->setEnabled(false);
-    micro_profile_stub->setChecked(false);
-    debug_menu->addAction(micro_profile_stub);
 #endif
 
     registersWidget = new RegistersWidget(system, this);
@@ -705,6 +1879,92 @@ void GMainWindow::InitializeDebugWidgets() {
     debug_menu->addAction(ipcRecorderWidget->toggleViewAction());
     connect(this, &GMainWindow::EmulationStarting, ipcRecorderWidget,
             &IPCRecorderWidget::OnEmulationStarting);
+}
+
+class MyProxyStyle : public QProxyStyle
+{
+  public:
+    int styleHint(StyleHint hint, const QStyleOption *option = nullptr,
+                  const QWidget *widget = nullptr, QStyleHintReturn *returnData = nullptr) const override
+    {
+        if (hint == QStyle::SH_Menu_Scrollable)
+            return 1;
+        return QProxyStyle::styleHint(hint, option, widget, returnData);
+    }
+};
+
+void GMainWindow::UpdateAmiibos()
+{
+	std::string pId = Loader::getProgramId();
+	int n = 0;
+	
+	for (const auto& pair : amiibos_actions) {
+		bool isVisible = amiibos_usages[pId][pair.first] == 1;
+		
+		pair.second->setVisible(isVisible);
+		if(isVisible) n++;
+	}
+	
+	ui->menu_Amiibo_Recommended->setEnabled(n != 0);
+	
+	n = 0;
+	
+	for (const auto& pair : amiibos_file_actions) {
+		bool isVisible = amiibos_usages[pId][pair.first] == 1;
+		
+		pair.second->setVisible(isVisible);
+		if(isVisible) n++;
+	}
+	
+	ui->menu_Amiibo_File_Recommended->setEnabled(n != 0);
+}
+
+void GMainWindow::InitializeAmiibos()
+{
+	for (const auto& pair : amiibos) {
+		QAction *amiiboAction = new QAction(this);
+		
+		amiiboAction->setText(QStringLiteral("%1 \t[%2]").arg(QString::fromStdString(pair.second)).arg(QString::fromStdString(amiibos_series[pair.first.substr(13, 2)])));
+		amiiboAction->setData(QString::fromStdString(pair.first));
+		
+        connect(amiiboAction, &QAction::triggered, this, &GMainWindow::OnMenuAmiiboAction);
+		
+		ui->menu_Amiibo_Full_List->addAction(amiiboAction);
+		
+		QAction *amiiboAction2 = new QAction(this);
+		
+		amiiboAction2->setText(amiiboAction->text());
+		amiiboAction2->setData(amiiboAction->data());
+		
+        connect(amiiboAction2, &QAction::triggered, this, &GMainWindow::OnMenuAmiiboAction);
+		
+		ui->menu_Amiibo_Recommended->addAction(amiiboAction2);
+		amiibos_actions[pair.first] = amiiboAction2;
+		
+		amiiboAction2 = new QAction(this);
+		
+		amiiboAction2->setText(amiiboAction->text());
+		amiiboAction2->setData(amiiboAction->data());
+		
+        connect(amiiboAction2, &QAction::triggered, this, &GMainWindow::OnMenuAmiiboFileAction);
+		
+		ui->menu_Amiibo_File_Full_List->addAction(amiiboAction2);
+		
+		amiiboAction2 = new QAction(this);
+		
+		amiiboAction2->setText(amiiboAction->text());
+		amiiboAction2->setData(amiiboAction->data());
+		
+        connect(amiiboAction2, &QAction::triggered, this, &GMainWindow::OnMenuAmiiboFileAction);
+		
+		ui->menu_Amiibo_File_Recommended->addAction(amiiboAction2);
+		amiibos_file_actions[pair.first] = amiiboAction2;
+    }
+	
+	ui->menu_Amiibo_Full_List->setStyle(new MyProxyStyle);
+	ui->menu_Amiibo_Recommended->setStyle(new MyProxyStyle);
+	ui->menu_Amiibo_File_Full_List->setStyle(new MyProxyStyle);
+	ui->menu_Amiibo_File_Recommended->setStyle(new MyProxyStyle);
 }
 
 void GMainWindow::InitializeRecentFileMenuActions() {
@@ -778,10 +2038,11 @@ void GMainWindow::InitializeHotkeys() {
 
     // QAction Hotkeys
     const auto link_action_shortcut = [&](QAction* action, const QString& action_name,
-                                          const bool primary_only = false) {
+                                          const bool primary_only = false,
+                                          const bool auto_repeat = false) {
         static const QString main_window = QStringLiteral("Main Window");
         action->setShortcut(hotkey_registry.GetKeySequence(main_window, action_name));
-        action->setAutoRepeat(false);
+        action->setAutoRepeat(auto_repeat);
         this->addAction(action);
         if (!primary_only)
             secondary_window->addAction(action);
@@ -798,6 +2059,11 @@ void GMainWindow::InitializeHotkeys() {
     link_action_shortcut(ui->action_Show_Status_Bar, QStringLiteral("Toggle Status Bar"));
     link_action_shortcut(ui->action_Fullscreen, fullscreen, true);
     link_action_shortcut(ui->action_Capture_Screenshot, QStringLiteral("Capture Screenshot"));
+    link_action_shortcut(ui->action_Debug_Pause, QStringLiteral("Debug Pause"));
+    link_action_shortcut(ui->action_Debug_Resume, QStringLiteral("Debug Resume"));
+    link_action_shortcut(ui->action_Debug_Step, QStringLiteral("Debug Step"), false, true);
+    link_action_shortcut(ui->action_Debug_Unschedule_All, QStringLiteral("Debug Unschedule All"));
+    link_action_shortcut(ui->action_Debug_Schedule_All, QStringLiteral("Debug Schedule All"));
     link_action_shortcut(ui->action_Screen_Layout_Swap_Screens, QStringLiteral("Swap Screens"));
     link_action_shortcut(ui->action_Screen_Layout_Upright_Screens,
                          QStringLiteral("Rotate Screens Upright"));
@@ -953,7 +2219,7 @@ void GMainWindow::OnAppFocusStateChanged(Qt::ApplicationState state) {
             OnPauseGame();
         } else if (!emu_thread->IsRunning() && auto_paused && state == Qt::ApplicationActive) {
             auto_paused = false;
-            OnStartGame();
+            OnResumeGame(false);
         }
     }
     if (UISettings::values.mute_when_in_background) {
@@ -1042,12 +2308,20 @@ void GMainWindow::ConnectMenuEvents() {
     connect_menu(ui->action_Connect_Artic, &GMainWindow::OnMenuConnectArticBase);
     connect_menu(ui->action_Remove_Azahar_Encryption, &GMainWindow::OnMenuRemoveAzaharEncryption);
     connect_menu(ui->action_Revert_Encryption_Removal, &GMainWindow::OnMenuRevertEncryptionRemoval);
-//    connect_menu(ui->action_Setup_System_Files, &GMainWindow::OnMenuSetUpSystemFiles);
+    connect_menu(ui->action_Setup_System_Files, &GMainWindow::OnMenuSetUpSystemFiles);
+    for (u32 region = 0; region < Core::NUM_SYSTEM_TITLE_REGIONS; region++) {
+        connect_menu(ui->menu_Download_System_Files->actions().at(region),
+                     [this, region] { OnDownloadSystemFilesMenu(region); });
+    }
     for (u32 region = 0; region < Core::NUM_SYSTEM_TITLE_REGIONS; region++) {
         connect_menu(ui->menu_Boot_Home_Menu->actions().at(region),
                      [this, region] { OnMenuBootHomeMenu(region); });
     }
     connect_menu(ui->action_Exit, &QMainWindow::close, QAction::QuitRole);
+    connect_menu(ui->action_Export_ZipPass, &GMainWindow::OnExportZipPass);
+    connect_menu(ui->action_Import_ZipPass, &GMainWindow::OnImportZipPass);
+    connect_menu(ui->action_Clear_StreetPass_Config, &GMainWindow::OnClearStreetPassConfig);
+    connect_menu(ui->action_Previous_Amiibo, &GMainWindow::OnPreviousAmiibo);
     connect_menu(ui->action_Load_Amiibo, &GMainWindow::OnLoadAmiibo);
     connect_menu(ui->action_Remove_Amiibo, &GMainWindow::OnRemoveAmiibo);
 
@@ -1114,6 +2388,27 @@ void GMainWindow::ConnectMenuEvents() {
     connect_menu(ui->action_Capture_Screenshot, &GMainWindow::OnCaptureScreenshot);
     connect_menu(ui->action_Dump_Video, &GMainWindow::OnDumpVideo);
 
+    // Tools debug
+    connect_menu(ui->action_Debug_Pause, [this] {
+        if (emu_thread) {
+            emu_thread->SetRunning(false);
+        }
+    });
+    connect_menu(ui->action_Debug_Resume, [this] {
+        if (emu_thread) {
+            emu_thread->SetRunning(true);
+        }
+    });
+    connect_menu(ui->action_Debug_Step, [this] {
+        if (emu_thread) {
+            emu_thread->ExecStep();
+        }
+    });
+    connect_menu(ui->action_Debug_Unschedule_All,
+                 [this] { system.DebugUnscheduleAllThreadsFromFrontend(true); });
+    connect_menu(ui->action_Debug_Schedule_All,
+                 [this] { system.DebugUnscheduleAllThreadsFromFrontend(false); });
+
     // Tools
     connect_menu(ui->action_Compress_ROM_File, &GMainWindow::OnCompressFile);
     connect_menu(ui->action_Decompress_ROM_File, &GMainWindow::OnDecompressFile);
@@ -1127,6 +2422,7 @@ void GMainWindow::ConnectMenuEvents() {
     connect_menu(ui->action_FAQ, []() {
         QDesktopServices::openUrl(QUrl(QStringLiteral("https://azahar-emu.org/pages/faq/")));
     });
+    connect_menu(ui->action_libzip, &GMainWindow::OnMenuLibzipLicence);
     connect_menu(ui->action_About, &GMainWindow::OnMenuAboutCitra, QAction::AboutRole);
 }
 
@@ -1148,6 +2444,15 @@ void GMainWindow::UpdateMenuState() {
     for (QAction* action : running_actions) {
         action->setEnabled(emulation_running);
     }
+	
+	ui->menu_Amiibo_File_Recommended->setEnabled(emulation_running);
+	ui->menu_Amiibo_Recommended->setEnabled(emulation_running);
+	ui->menu_Amiibo_Full_List->setEnabled(emulation_running);
+	UpdateAmiibos();
+	
+	ui->action_Export_ZipPass->setEnabled(!emulation_running);
+	ui->action_Import_ZipPass->setEnabled(!emulation_running);
+	ui->action_Clear_StreetPass_Config->setEnabled(!emulation_running);
 
     ui->action_Capture_Screenshot->setEnabled(emulation_running);
     ui->action_Advance_Frame->setEnabled(emulation_running && is_paused);
@@ -1270,35 +2575,23 @@ bool GMainWindow::LoadROM(const QString& filename) {
         system.Load(*render_window, filename.toStdString(), secondary_window)};
 
     if (result != Core::System::ResultStatus::Success) {
+        QString invalid_format = tr("Invalid application format");
+        QString invalid_format_description =
+            tr("The application file format not supported.<br>Please make sure you are using one "
+               "of the compatible file formats:<ul><li>Cartridge images: "
+               "<b>.cci/.zcci/.3ds</b></li><li>Installable archives: "
+               "<b>.cia/.zcia</b></li><li>Homebrew titles: <b>.3dsx/.z3dsx</b></li><li>NCCH "
+               "containers: <b>.cxi/.zcxi/.app</b></li><li>ELF files: <b>.elf/.axf</b></li></ul>");
+
         switch (result) {
         case Core::System::ResultStatus::ErrorGetLoader:
-            LOG_CRITICAL(Frontend, "Failed to obtain loader for {}!", filename.toStdString());
-            QMessageBox::critical(
-                this, tr("Invalid App Format"),
-                tr("Your app format is not supported.<br/>Please follow the guides to redump your "
-                   "<a "
-                   "href='https://web.archive.org/web/20240304210021/https://citra-emu.org/wiki/"
-                   "dumping-game-cartridges/'>game "
-                   "cartridges</a> or "
-                   "<a "
-                   "href='https://web.archive.org/web/20240304210011/https://citra-emu.org/wiki/"
-                   "dumping-installed-titles/'>installed "
-                   "titles</a>."));
+            LOG_CRITICAL(Frontend, "Failed to obtain loader for {}", filename.toStdString());
+            QMessageBox::critical(this, invalid_format, invalid_format_description);
             break;
 
         case Core::System::ResultStatus::ErrorSystemMode:
-            LOG_CRITICAL(Frontend, "Failed to load App!");
-            QMessageBox::critical(
-                this, tr("App Corrupted"),
-                tr("Your app is corrupted. <br/>Please follow the guides to redump your "
-                   "<a "
-                   "href='https://web.archive.org/web/20240304210021/https://citra-emu.org/wiki/"
-                   "dumping-game-cartridges/'>game "
-                   "cartridges</a> or "
-                   "<a "
-                   "href='https://web.archive.org/web/20240304210011/https://citra-emu.org/wiki/"
-                   "dumping-installed-titles/'>installed "
-                   "titles</a>."));
+            LOG_CRITICAL(Frontend, "Failed to load application!");
+            QMessageBox::critical(this, invalid_format, invalid_format_description);
             break;
 
         case Core::System::ResultStatus::ErrorLoader_ErrorEncrypted: {
@@ -1316,21 +2609,11 @@ bool GMainWindow::LoadROM(const QString& filename) {
             break;
         }
         case Core::System::ResultStatus::ErrorLoader_ErrorInvalidFormat:
-            QMessageBox::critical(
-                this, tr("Invalid App Format"),
-                tr("Your app format is not supported.<br/>Please follow the guides to redump your "
-                   "<a "
-                   "href='https://web.archive.org/web/20240304210021/https://citra-emu.org/wiki/"
-                   "dumping-game-cartridges/'>game "
-                   "cartridges</a> or "
-                   "<a "
-                   "href='https://web.archive.org/web/20240304210011/https://citra-emu.org/wiki/"
-                   "dumping-installed-titles/'>installed "
-                   "titles</a>."));
+            QMessageBox::critical(this, invalid_format, invalid_format_description);
             break;
 
         case Core::System::ResultStatus::ErrorLoader_ErrorGbaTitle:
-            QMessageBox::critical(this, tr("Unsupported App"),
+            QMessageBox::critical(this, tr("Unsupported application"),
                                   tr("GBA Virtual Console is not supported by Azahar."));
             break;
 
@@ -1347,10 +2630,27 @@ bool GMainWindow::LoadROM(const QString& filename) {
                                   tr("New 3DS exclusive applications cannot be loaded without "
                                      "enabling the New 3DS mode."));
             break;
+        case Core::System::ResultStatus::ErrorLoader:
+            QMessageBox::critical(this, tr("Generic load error"),
+                                  tr("An generic load error occurred while loading the "
+                                     "application.<br/>Please check the log for more details."));
+            break;
+        case Core::System::ResultStatus::ErrorLoader_ErrorPatches:
+            QMessageBox::critical(this, tr("Error applying patches"),
+                                  tr("A generic error occurred while applying a patch to the "
+                                     "application.<br/>Please check the log for more details."));
+            break;
+        case Core::System::ResultStatus::ErrorLoader_ErrorPatchesInvalidTitle:
+            QMessageBox::critical(
+                this, tr("Error applying patches"),
+                tr("Failed to apply a patch because it is designed for a different "
+                   "application.<br/>Please make sure you are using the patches for "
+                   "the right application, region and version."));
+            break;
         default:
             QMessageBox::critical(
-                this, tr("Error while loading App!"),
-                tr("An unknown error occurred. Please see the log for more details."));
+                this, tr("Error while loading application"),
+                tr("An unknown error occurred.<br/>Please see the log for more details."));
             break;
         }
         return false;
@@ -1409,7 +2709,8 @@ void GMainWindow::BootGame(const QString& filename) {
     auto loader = Loader::GetLoader(path);
 
     u64 title_id{0};
-    Loader::ResultStatus res = loader->ReadProgramId(title_id);
+    Loader::ResultStatus res =
+        loader ? loader->ReadProgramId(title_id) : Loader::ResultStatus::Error;
 
     if (Loader::ResultStatus::Success == res) {
         // Load per game settings
@@ -1422,7 +2723,7 @@ void GMainWindow::BootGame(const QString& filename) {
 
     // Artic Server cannot accept a client multiple times, so multiple loaders are not
     // possible. Instead register the app loader early and do not create it again on system load.
-    if (!loader->SupportsMultipleInstancesForSameFile()) {
+    if (loader && !loader->SupportsMultipleInstancesForSameFile()) {
         system.RegisterAppLoaderEarly(loader);
     }
 
@@ -1516,13 +2817,15 @@ void GMainWindow::BootGame(const QString& filename) {
         ShowFullscreen();
     }
 
-    OnStartGame();
+    OnResumeGame(true);
 }
 
 void GMainWindow::ShutdownGame() {
     if (!emulation_running) {
         return;
     }
+	
+	Loader::resetProgramId();
 
     if (ui->action_Fullscreen->isChecked()) {
         HideFullscreen();
@@ -1569,7 +2872,7 @@ void GMainWindow::ShutdownGame() {
     OnCloseMovie();
 
 #ifdef USE_DISCORD_PRESENCE
-    discord_rpc->Update();
+    discord_rpc->Update(false);
 #endif
 #ifdef __unix__
     Common::Linux::StopGamemode();
@@ -1602,6 +2905,7 @@ void GMainWindow::ShutdownGame() {
     emu_speed_label->setVisible(false);
     game_fps_label->setVisible(false);
     emu_frametime_label->setVisible(false);
+    notification_led->setColor(QColor(0, 0, 0));
 
     UpdateSaveStates();
 
@@ -1930,7 +3234,9 @@ bool GMainWindow::CreateShortcutLink(const std::filesystem::path& shortcut_path,
         LOG_ERROR(Frontend, "Failed to get IPersistFile interface");
         return false;
     }
-    hres = persist_file->Save(std::filesystem::path{shortcut_path / (name + ".lnk")}.c_str(), TRUE);
+    hres = persist_file->Save(
+        std::filesystem::path{shortcut_path / (Common::UTF8ToUTF16W(name) + L".lnk")}.c_str(),
+        TRUE);
     if (FAILED(hres)) {
         LOG_ERROR(Frontend, "Failed to save shortcut");
         return false;
@@ -2372,6 +3678,47 @@ void GMainWindow::OnMenuRemoveAzaharEncryption() {
 	game_list->SetDirectoryWatcherEnabled(true);
 }
 
+void GMainWindow::OnDownloadSystemFilesMenu(u32 region) {
+	game_list->SetDirectoryWatcherEnabled(false);
+	
+    const auto mode = Core::SystemTitleSet::OldAndNew;
+    const std::vector<u64> titles = Core::GetSystemTitleIds(mode, region);
+
+    QProgressDialog progress(tr("Downloading system files..."), tr("Cancel"), 0,
+                             static_cast<int>(titles.size()), this);
+    progress.setWindowModality(Qt::WindowModal);
+
+    QFutureWatcher<void> future_watcher;
+    QObject::connect(&future_watcher, &QFutureWatcher<void>::finished, &progress,
+                     &QProgressDialog::reset);
+    QObject::connect(&progress, &QProgressDialog::canceled, &future_watcher,
+                     &QFutureWatcher<void>::cancel);
+    QObject::connect(&future_watcher, &QFutureWatcher<void>::progressValueChanged, &progress,
+                     &QProgressDialog::setValue);
+
+    auto failed = false;
+    const auto download_title = [&future_watcher, &failed](const u64& title_id) {
+        if (Service::AM::InstallFromNus(title_id) != Service::AM::InstallStatus::Success) {
+            failed = true;
+            future_watcher.cancel();
+        }
+    };
+
+    future_watcher.setFuture(QtConcurrent::map(titles, download_title));
+    progress.exec();
+    future_watcher.waitForFinished();
+
+    if (failed) {
+        QMessageBox::critical(this, tr("AzaharPlus"), tr("Downloading system files failed."));
+    } else if (!future_watcher.isCanceled()) {
+        QMessageBox::information(this, tr("AzaharPlus"), tr("Successfully downloaded system files."));
+    }
+	
+	game_list->SetDirectoryWatcherEnabled(true);
+    game_list->PopulateAsync(UISettings::values.game_dirs);
+	UpdateBootHomeMenuState();
+}
+
 void GMainWindow::OnMenuBootHomeMenu(u32 region) {
     BootGame(QString::fromStdString(Core::GetHomeMenuNcchPath(region)));
 }
@@ -2519,6 +3866,86 @@ void GMainWindow::UninstallTitles(
     }
 }
 
+void GMainWindow::OnPreviousAmiibo() {
+	LOG_ERROR(Frontend, "OnPreviousAmiibo");
+	
+	if (!emu_thread || !emu_thread->IsRunning()) [[unlikely]] {
+        return;
+    }
+
+    Service::SM::ServiceManager& sm = system.ServiceManager();
+    auto nfc = sm.GetService<Service::NFC::Module::Interface>("nfc:u");
+    if (nfc == nullptr) {
+        return;
+    }
+
+    std::scoped_lock lock{system.Kernel().GetHLELock()};
+    if (nfc->IsTagActive()) {
+        QMessageBox::warning(this, tr("Error opening amiibo data file"),
+                             tr("A tag is already in use."));
+        return;
+    }
+
+    if (!nfc->IsSearchingForAmiibos()) {
+        QMessageBox::warning(this, tr("Error opening amiibo data file"),
+                             tr("Application is not looking for amiibos."));
+        return;
+    }
+    
+	LoadAmiibo(QStringLiteral("@previous"));
+}
+
+void GMainWindow::OnMenuAmiiboFileAction() {
+    QAction* action = qobject_cast<QAction*>(sender());
+    ASSERT(action);
+
+    const QString amiiboId = action->data().toString();
+	
+	QString out_path = QString::fromStdString(FileUtil::GetUserPath(FileUtil::UserPath::UserDir))
+						 + QStringLiteral(DIR_SEP) 
+						 + QString::fromStdString(amiibos[amiiboId.toStdString()]);
+	QString fileName = QFileDialog::getSaveFileName(this, tr("Generate Amiibo File"),
+													out_path,
+													tr("Amiibo (*.bin)"));
+	if(fileName.length() == 0) return;
+	
+	Service::NFC::makeAmiiboFile(amiiboId.toStdString(), fileName.toStdString());
+}
+
+void GMainWindow::OnMenuAmiiboAction() {
+    QAction* action = qobject_cast<QAction*>(sender());
+    ASSERT(action);
+
+    const QString amiiboId = action->data().toString();
+	
+	if (!emu_thread || !emu_thread->IsRunning()) [[unlikely]] {
+        return;
+    }
+
+    Service::SM::ServiceManager& sm = system.ServiceManager();
+    auto nfc = sm.GetService<Service::NFC::Module::Interface>("nfc:u");
+    if (nfc == nullptr) {
+        return;
+    }
+
+    std::scoped_lock lock{system.Kernel().GetHLELock()};
+    if (nfc->IsTagActive()) {
+        QMessageBox::warning(this, tr("Error opening amiibo data file"),
+                             tr("A tag is already in use."));
+        return;
+    }
+
+    if (!nfc->IsSearchingForAmiibos()) {
+        QMessageBox::warning(this, tr("Error opening amiibo data file"),
+                             tr("Application is not looking for amiibos."));
+        return;
+    }
+    
+	ui->action_Previous_Amiibo->setEnabled(true);
+	
+	LoadAmiibo(amiiboId);
+}
+
 void GMainWindow::OnMenuRecentFile() {
     QAction* action = qobject_cast<QAction*>(sender());
     ASSERT(action);
@@ -2536,7 +3963,7 @@ void GMainWindow::OnMenuRecentFile() {
     }
 }
 
-void GMainWindow::OnStartGame() {
+void GMainWindow::OnResumeGame(bool first_start) {
     qt_cameras->ResumeCameras();
 
     PreventOSSleep();
@@ -2553,9 +3980,12 @@ void GMainWindow::OnStartGame() {
     play_time_manager->SetProgramId(game_title_id);
     play_time_manager->Start();
 
+    if (first_start) {
 #ifdef USE_DISCORD_PRESENCE
-    discord_rpc->Update();
+        discord_rpc->Update(true);
 #endif
+    }
+
 #ifdef __unix__
     Common::Linux::StartGamemode();
 #endif
@@ -2591,7 +4021,7 @@ void GMainWindow::OnPauseContinueGame() {
         if (emu_thread->IsRunning() && !system.frame_limiter.IsFrameAdvancing()) {
             OnPauseGame();
         } else {
-            OnStartGame();
+            OnResumeGame(false);
         }
     }
 }
@@ -2630,8 +4060,14 @@ void GMainWindow::ToggleSecondaryFullscreen() {
         return;
     }
     if (secondary_window->isFullScreen()) {
+#ifdef NEEDS_ROUND_CORNERS_FIX
+        WindowCornerManager::instance().blockRoundedCorners(secondary_window, false);
+#endif
         secondary_window->showNormal();
     } else {
+#ifdef NEEDS_ROUND_CORNERS_FIX
+        WindowCornerManager::instance().blockRoundedCorners(secondary_window, true);
+#endif
         secondary_window->showFullScreen();
     }
 }
@@ -2641,9 +4077,15 @@ void GMainWindow::ShowFullscreen() {
         UISettings::values.geometry = saveGeometry();
         ui->menubar->hide();
         statusBar()->hide();
+#ifdef NEEDS_ROUND_CORNERS_FIX
+        WindowCornerManager::instance().blockRoundedCorners(this, true);
+#endif
         showFullScreen();
     } else {
         UISettings::values.renderwindow_geometry = render_window->saveGeometry();
+#ifdef NEEDS_ROUND_CORNERS_FIX
+        WindowCornerManager::instance().blockRoundedCorners(render_window, true);
+#endif
         render_window->showFullScreen();
     }
 }
@@ -2652,9 +4094,15 @@ void GMainWindow::HideFullscreen() {
     if (ui->action_Single_Window_Mode->isChecked()) {
         statusBar()->setVisible(ui->action_Show_Status_Bar->isChecked());
         ui->menubar->show();
+#ifdef NEEDS_ROUND_CORNERS_FIX
+        WindowCornerManager::instance().blockRoundedCorners(this, false);
+#endif
         showNormal();
         restoreGeometry(UISettings::values.geometry);
     } else {
+#ifdef NEEDS_ROUND_CORNERS_FIX
+        WindowCornerManager::instance().blockRoundedCorners(render_window, false);
+#endif
         render_window->showNormal();
         render_window->restoreGeometry(UISettings::values.renderwindow_geometry);
     }
@@ -2796,25 +4244,22 @@ void GMainWindow::AdjustSpeedLimit(bool increase) {
 
 void GMainWindow::ToggleScreenLayout() {
     const Settings::LayoutOption new_layout = []() {
-        switch (Settings::values.layout_option.GetValue()) {
-        case Settings::LayoutOption::Default:
-            return Settings::LayoutOption::SingleScreen;
-        case Settings::LayoutOption::SingleScreen:
-            return Settings::LayoutOption::LargeScreen;
-        case Settings::LayoutOption::LargeScreen:
-            return Settings::LayoutOption::HybridScreen;
-        case Settings::LayoutOption::HybridScreen:
-            return Settings::LayoutOption::SideScreen;
-        case Settings::LayoutOption::SideScreen:
-            return Settings::LayoutOption::SeparateWindows;
-        case Settings::LayoutOption::SeparateWindows:
-            return Settings::LayoutOption::CustomLayout;
-        case Settings::LayoutOption::CustomLayout:
-            return Settings::LayoutOption::Default;
-        default:
-            LOG_ERROR(Frontend, "Unknown layout option {}",
-                      Settings::values.layout_option.GetValue());
-            return Settings::LayoutOption::Default;
+        const Settings::LayoutOption current_layout = Settings::values.layout_option.GetValue();
+        std::vector<Settings::LayoutOption> layouts_to_cycle =
+            Settings::values.layouts_to_cycle.GetValue();
+        const auto current_pos =
+            distance(layouts_to_cycle.begin(),
+                     std::find(layouts_to_cycle.begin(), layouts_to_cycle.end(), current_layout));
+        // if the layouts_to_cycle setting has somehow been
+        // cleared out, add just default back in
+        if (layouts_to_cycle.size() == 0) {
+            layouts_to_cycle.push_back(Settings::LayoutOption::Default);
+        }
+        if (current_pos >= layouts_to_cycle.size() - 1) {
+            // either this layout wasn't found or it was last so move to the beginning
+            return layouts_to_cycle[0];
+        } else {
+            return layouts_to_cycle[current_pos + 1];
         }
     }();
 
@@ -2896,6 +4341,7 @@ void GMainWindow::OnConfigure() {
 #ifdef USE_DISCORD_PRESENCE
         if (UISettings::values.enable_discord_presence.GetValue() != old_discord_presence) {
             SetDiscordEnabled(UISettings::values.enable_discord_presence.GetValue());
+            discord_rpc->Update(system.IsPoweredOn());
         }
 #endif
 #ifdef __unix__
@@ -2924,6 +4370,58 @@ void GMainWindow::OnConfigure() {
         Settings::values.touch_from_button_maps = old_touch_from_button_maps;
         Settings::LoadProfile(old_input_profile_index);
     }
+}
+
+void GMainWindow::OnExportZipPass() {
+	QString out_path = QString::fromStdString(FileUtil::GetUserPath(FileUtil::UserPath::UserDir));
+	QString fileName = QFileDialog::getSaveFileName(this, tr("Export ZipPass Data"),
+													out_path,
+													tr("ZipPass (*.pass.zip)"));
+	if(fileName.length() == 0) return;
+	
+	int ret = Core::exportZipPass(fileName.toStdString());
+	
+	if(ret < 0){
+		QMessageBox::critical(this, tr("Export ZipPass Data"), tr("Failure"));
+	}else if(ret == 0){
+		QMessageBox::warning(this, tr("Export ZipPass Data"), tr("Nothing to export"));
+	}else{
+		QMessageBox::information(this, tr("Export ZipPass Data"), tr("Success"));
+	}
+}
+
+void GMainWindow::OnClearStreetPassConfig() {
+	Core::clearStreetPassConfig();
+	
+	QMessageBox::information(this, tr("Clear StreetPass Configuration"), tr("Success"));
+}
+
+void GMainWindow::OnImportZipPass() {
+	QString out_path = QString::fromStdString(FileUtil::GetUserPath(FileUtil::UserPath::UserDir));
+	QStringList fileNames = QFileDialog::getOpenFileNames(this, tr("Import ZipPass Data"),
+													out_path,
+													tr("ZipPass (*.pass.zip)"));
+	int ret = 0;
+	int err = 0;
+	
+	if(fileNames.size() == 0) return;
+	
+	for (const QString& fileName: fileNames){
+		int res = Core::importZipPass(fileName.toStdString());
+		
+		if(res > 0) ret++;
+        if(res < 0) err++;
+	}
+	
+	if(err > 0 && ret == 0) ret = -1;
+	
+	if(ret < 0){
+		QMessageBox::critical(this, tr("Import ZipPass Data"), tr("Failure"));
+	}else if(ret == 0){
+		QMessageBox::warning(this, tr("Import ZipPass Data"), tr("Nothing to import"));
+	}else{
+		QMessageBox::information(this, tr("Import ZipPass Data"), tr("Success"));
+	}
 }
 
 void GMainWindow::OnLoadAmiibo() {
@@ -3063,7 +4561,7 @@ void GMainWindow::OnCloseMovie() {
         }
 
         if (was_running) {
-            OnStartGame();
+            OnResumeGame(false);
         }
     }
 
@@ -3085,7 +4583,7 @@ void GMainWindow::OnSaveMovie() {
     }
 
     if (was_running) {
-        OnStartGame();
+        OnResumeGame(false);
     }
 }
 
@@ -3129,7 +4627,7 @@ void GMainWindow::OnCaptureScreenshot() {
         screenshot_window->CaptureScreenshot(
             UISettings::values.screenshot_resolution_factor.GetValue(),
             QString::fromStdString(path));
-        OnStartGame();
+        OnResumeGame(false);
     }
 }
 
@@ -3172,64 +4670,6 @@ void GMainWindow::OnDumpVideo() {
     }
 }
 
-static std::optional<std::pair<Loader::AppLoader::CompressFileInfo, size_t>> GetCompressFileInfo(
-    const std::string& filepath, bool compress) {
-    Loader::AppLoader::CompressFileInfo compress_info{};
-    compress_info.is_supported = false;
-    size_t frame_size{};
-    auto loader = Loader::GetLoader(filepath);
-    if (loader) {
-        compress_info = loader->GetCompressFileInfo();
-        frame_size = FileUtil::Z3DSWriteIOFile::DEFAULT_FRAME_SIZE;
-    } else {
-        bool is_compressed = false;
-        if (Service::AM::CheckCIAToInstall(filepath, is_compressed, compress ? true : false) ==
-            Service::AM::InstallStatus::Success) {
-            compress_info.is_supported = true;
-            compress_info.is_compressed = is_compressed;
-            compress_info.recommended_compressed_extension = "zcia";
-            compress_info.recommended_uncompressed_extension = "cia";
-            compress_info.underlying_magic = std::array<u8, 4>({'C', 'I', 'A', '\0'});
-            frame_size = FileUtil::Z3DSWriteIOFile::DEFAULT_CIA_FRAME_SIZE;
-            if (compress) {
-                auto meta_info = Service::AM::GetCIAInfos(filepath);
-                if (meta_info.Succeeded()) {
-                    const auto& meta_info_val = meta_info.Unwrap();
-                    std::vector<u8> value(sizeof(Service::AM::TitleInfo));
-                    memcpy(value.data(), &meta_info_val.first, sizeof(Service::AM::TitleInfo));
-                    compress_info.default_metadata.emplace("titleinfo", value);
-                    if (meta_info_val.second) {
-                        value.resize(sizeof(Loader::SMDH));
-                        memcpy(value.data(), meta_info_val.second.get(), sizeof(Loader::SMDH));
-                        compress_info.default_metadata.emplace("smdh", value);
-                    }
-                }
-            }
-        }
-    }
-
-    if (!compress_info.is_supported) {
-        LOG_ERROR(Frontend,
-                  "Error {} file {}, the selected file is not a compatible 3DS ROM format or is "
-                  "encrypted.",
-                  compress ? "compressing" : "decompressing", filepath);
-        return {};
-    }
-    if (compress_info.is_compressed && compress) {
-        LOG_ERROR(Frontend, "Error compressing file {}, the selected file is already compressed",
-                  filepath);
-        return {};
-    }
-    if (!compress_info.is_compressed && !compress) {
-        LOG_ERROR(Frontend,
-                  "Error decompressing file {}, the selected file is already decompressed",
-                  filepath);
-        return {};
-    }
-
-    return std::pair(compress_info, frame_size);
-}
-
 void GMainWindow::OnCompressFile() {
     // NOTE: Encrypted files SHOULD NEVER be compressed, otherwise the resulting
     // compressed file will have very poor compression ratios, due to the high
@@ -3252,7 +4692,7 @@ void GMainWindow::OnCompressFile() {
     bool single_file = filepaths.size() == 1;
     if (single_file) {
         // If it's a single file, ask the user for the output file.
-        auto compress_info = GetCompressFileInfo(filepaths[0].toStdString(), true);
+        auto compress_info = Loader::GetCompressFileInfo(filepaths[0].toStdString(), true);
         if (!compress_info.has_value()) {
             emit CompressFinished(true, false);
             return;
@@ -3292,7 +4732,7 @@ void GMainWindow::OnCompressFile() {
             std::string in_path = filepath.toStdString();
 
             // Identify file type
-            auto compress_info = GetCompressFileInfo(filepath.toStdString(), true);
+            auto compress_info = Loader::GetCompressFileInfo(filepath.toStdString(), true);
             if (!compress_info.has_value()) {
                 total_success = false;
                 continue;
@@ -3345,7 +4785,7 @@ void GMainWindow::OnDecompressFile() {
     bool single_file = filepaths.size() == 1;
     if (single_file) {
         // If it's a single file, ask the user for the output file.
-        auto compress_info = GetCompressFileInfo(filepaths[0].toStdString(), false);
+        auto compress_info = Loader::GetCompressFileInfo(filepaths[0].toStdString(), false);
         if (!compress_info.has_value()) {
             emit CompressFinished(false, false);
             return;
@@ -3386,7 +4826,7 @@ void GMainWindow::OnDecompressFile() {
             std::string in_path = filepath.toStdString();
 
             // Identify file type
-            auto compress_info = GetCompressFileInfo(filepath.toStdString(), false);
+            auto compress_info = Loader::GetCompressFileInfo(filepath.toStdString(), false);
             if (!compress_info.has_value()) {
                 total_success = false;
                 continue;
@@ -3532,7 +4972,7 @@ void GMainWindow::OnStopVideoDumping() {
                 ShutdownGame();
             } else if (game_paused_for_dumping) {
                 game_paused_for_dumping = false;
-                OnStartGame();
+                OnResumeGame(false);
             }
         });
         future_watcher->setFuture(future);
@@ -3796,6 +5236,11 @@ void GMainWindow::mouseReleaseEvent([[maybe_unused]] QMouseEvent* event) {
     OnMouseActivity();
 }
 
+void GMainWindow::showEvent([[maybe_unused]] QShowEvent* event) {
+    game_list->LoadCompatibilityList();
+    game_list->PopulateAsync(UISettings::values.game_dirs);
+}
+
 void GMainWindow::OnCoreError(Core::System::ResultStatus result, std::string details) {
     QString status_message;
 
@@ -3829,6 +5274,18 @@ void GMainWindow::OnCoreError(Core::System::ResultStatus result, std::string det
                    .c_str());
         error_severity_icon = QMessageBox::Icon::Critical;
         can_continue = false;
+    } else if (result == Core::System::ResultStatus::ErrorCoreExceptionRaised) {
+        title = tr("An exception occurred");
+        message = tr("An exception occurred while executing the emulated application.\n\n");
+        message += QString::fromStdString(details);
+        error_severity_icon = QMessageBox::Icon::Critical;
+        can_continue = false;
+    } else if (result == Core::System::ResultStatus::ErrorMemoryExceptionRaised) {
+        title = tr("An invalid memory access occurred");
+        message =
+            tr("An invalid memory access occurred while executing the emulated application.\n\n");
+        message += QString::fromStdString(details);
+        error_severity_icon = QMessageBox::Icon::Critical;
     } else {
         title = tr("Fatal Error");
         message = tr("A fatal error occurred. "
@@ -3873,6 +5330,41 @@ void GMainWindow::OnCoreError(Core::System::ResultStatus result, std::string det
         message_label->setText(status_message);
         message_label_used_for_movie = false;
     }
+}
+
+void GMainWindow::OnMenuLibzipLicence() {
+    QMessageBox::information(this, tr("libzip licence"), tr(
+"Copyright (C) 1999-2020 Dieter Baron and Thomas Klausner\n\
+\n\
+The authors can be contacted at <info@libzip.org>\n\
+\n\
+Redistribution and use in source and binary forms, with or without \
+modification, are permitted provided that the following conditions \
+are met:\n\
+\n\
+1. Redistributions of source code must retain the above copyright \
+notice, this list of conditions and the following disclaimer.\n\
+\n\
+2. Redistributions in binary form must reproduce the above copyright \
+notice, this list of conditions and the following disclaimer in \
+the documentation and/or other materials provided with the \
+distribution.\n\
+\n\
+3. The names of the authors may not be used to endorse or promote \
+products derived from this software without specific prior \
+written permission.\n\
+\n\
+THIS SOFTWARE IS PROVIDED BY THE AUTHORS ``AS IS'' AND ANY EXPRESS \
+OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED \
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE \
+ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY \
+DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL \
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE \
+GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS \
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER \
+IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR \
+OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN \
+IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE."));
 }
 
 void GMainWindow::OnMenuAboutCitra() {
@@ -4055,25 +5547,48 @@ void GMainWindow::UpdateUITheme() {
 }
 
 void GMainWindow::LoadTranslation() {
+    bool loaded = false;
+
+    const QString lang_en = QStringLiteral("en");
+    const QString languages_dir = QStringLiteral(":/languages/");
+
+    // Workaround for incorrect Qt system language detection
+    // TODO: Allow the "<System>" option to actually be selected rather than overriding the
+    //       selected language option? Current behaviour is better than the issue it fixes,
+    //       but not ideal.
+    if (UISettings::values.language.isEmpty()) {
+        const auto languages = QLocale::system().uiLanguages(QLocale::TagSeparator::Underscore);
+        for (const auto& lang : languages) {
+            // If the first language found is English, no need to install any translation
+            if (lang == lang_en) {
+                UISettings::values.language = lang_en;
+                return;
+            }
+            loaded = translator.load(lang, languages_dir);
+            if (loaded) {
+                UISettings::values.language = lang;
+                break;
+            }
+        }
+    }
+
     // If the selected language is English, no need to install any translation
-    if (UISettings::values.language == QStringLiteral("en")) {
+    if (UISettings::values.language == lang_en) {
         return;
     }
 
-    bool loaded;
-
-    if (UISettings::values.language.isEmpty()) {
+    if (UISettings::values.language.isEmpty() && !loaded) {
         // Use the system's default locale
-        loaded = translator.load(QLocale::system(), {}, {}, QStringLiteral(":/languages/"));
+        loaded = translator.load(QLocale::system(), {}, {}, languages_dir);
     } else {
         // Otherwise load from the specified file
-        loaded = translator.load(UISettings::values.language, QStringLiteral(":/languages/"));
+        loaded = translator.load(UISettings::values.language, languages_dir);
     }
 
     if (loaded) {
         qApp->installTranslator(&translator);
     } else {
-        UISettings::values.language = QStringLiteral("en");
+        UISettings::values.language = lang_en;
     }
 }
 
@@ -4150,14 +5665,15 @@ void GMainWindow::OnEmulatorUpdateAvailable() {
 #endif
 
 void GMainWindow::OnSwitchDiskResources(VideoCore::LoadCallbackStage stage, std::size_t value,
-                                        std::size_t total) {
+                                        std::size_t total, const std::string& object) {
     if (stage == VideoCore::LoadCallbackStage::Prepare) {
         loading_shaders_label->setText(QString());
         loading_shaders_label->setVisible(true);
     } else if (stage == VideoCore::LoadCallbackStage::Complete) {
         loading_shaders_label->setVisible(false);
     } else {
-        loading_shaders_label->setText(loading_screen->GetStageTranslation(stage, value, total));
+        loading_shaders_label->setText(
+            loading_screen->GetStageTranslation(stage, value, total, object));
     }
 }
 
@@ -4260,7 +5776,6 @@ void GMainWindow::SetDiscordEnabled([[maybe_unused]] bool state) {
     } else {
         discord_rpc = std::make_unique<DiscordRPC::NullImpl>();
     }
-    discord_rpc->Update();
 }
 #endif
 

@@ -25,7 +25,10 @@ bool EmuWindow_Android::OnSurfaceChanged(ANativeWindow* surface) {
     render_window = surface;
     window_info.type = Frontend::WindowSystemType::Android;
     window_info.render_surface = surface;
-
+    if (surface != nullptr) {
+        window_width = ANativeWindow_getWidth(surface);
+        window_height = ANativeWindow_getHeight(surface);
+    }
     StopPresenting();
     OnFramebufferSizeChanged();
     return true;
@@ -66,8 +69,6 @@ EmuWindow_Android::EmuWindow_Android(ANativeWindow* surface, bool is_secondary)
 
     window_width = ANativeWindow_getWidth(surface);
     window_height = ANativeWindow_getHeight(surface);
-
-    Network::Init();
 }
 
 EmuWindow_Android::~EmuWindow_Android() {

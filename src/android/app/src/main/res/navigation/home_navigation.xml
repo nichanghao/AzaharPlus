@@ -20,6 +20,9 @@
             android:id="@+id/action_homeSettingsFragment_to_systemFilesFragment"
             app:destination="@id/systemFilesFragment" />
         <action
+            android:id="@+id/action_homeSettingsFragment_to_systemFilesDownloadFragment"
+            app:destination="@id/systemFilesDownloadFragment" />
+        <action
             android:id="@+id/action_homeSettingsFragment_to_driverManagerFragment"
             app:destination="@id/driverManagerFragment" />
     </fragment>
@@ -69,6 +72,11 @@
         android:id="@+id/action_global_emulationActivity"
         app:destination="@id/emulationActivity"
         app:launchSingleTop="true" />
+
+    <fragment
+        android:id="@+id/systemFilesDownloadFragment"
+        android:name="org.citra.citra_emu.fragments.SystemFilesDownloadFragment"
+        android:label="SystemFilesDownloadFragment" />
 
     <fragment
         android:id="@+id/systemFilesFragment"

@@ -5,6 +5,7 @@ Each version is the same as the corresponding version of Azahar exept for this:
 - Ability to download system files from official servers. No need for an actual 3DS.
 - Compatibility with older CPUs (no SSE4.2 required)
 - Compatibility with Android 9
+- ZipPass: A new way to exchange StreetPass data through zip files
 
 The Azahar logo is the property of PabloMK7 and angyartanddraw
 ---
@@ -17,7 +18,7 @@ The Azahar logo is the property of PabloMK7 and angyartanddraw
 
 # Installation
 
-### Windows
+### Windows / Linux
 
 Download the latest release from [Releases](https://github.com/AzaharPlus/AzaharPlus/releases).
 
@@ -34,10 +35,19 @@ You can install the app using Obtainium:
 
 If you wish, you can also simply install the latest APK from the [Releases](https://github.com/AzaharPlus/AzaharPlus/releases) page.
 
----
-### Linux
+# ZipPass
 
-It is available as an AppImage on the [Releases](https://github.com/AzaharPlus/AzaharPlus/releases) page.
+ZipPass allows you to share StreetPass data in the form of zip files.<br>
+On desktop it is in File > ZipPass. On android it is in the main menu.
+
+- It can only be used when no game is running.
+- It requires system files and LLE modules enabled.
+- You need to enable StreetPass in your games.
+- The export feature will save the StreetPass data of all your games in a xxx.pass.zip file.
+- The import feature lets you pick one or several xxx.pass.zip files and will simulate StreetPass tags.
+- You can pick as many files as you want for the import but every game has a limit for its queue and anything - beyond that will be ignored.
+- This is all pretty experimental so in case of issues, I added a menu to disable StreetPass on every game. You won't lose anything, you will simply need to enable StreetPass again.
+- I opened a topic on the github for people to share their data: [ZipPass Exchange](https://github.com/AzaharPlus/AzaharPlus/discussions/117)
 
 # Build instructions
 

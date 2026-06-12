@@ -6,11 +6,12 @@ package org.citra.citra_emu.activities
 
 import android.Manifest.permission
 import android.annotation.SuppressLint
+import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.view.InputDevice
 import android.view.KeyEvent
@@ -18,9 +19,11 @@ import android.view.MotionEvent
 import android.view.Window
 import android.view.WindowManager
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContract
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.net.toUri
 import androidx.core.os.BundleCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -33,6 +36,7 @@ import org.citra.citra_emu.R
 import org.citra.citra_emu.camera.StillImageCameraHelper.OnFilePickerResult
 import org.citra.citra_emu.contracts.OpenFileResultContract
 import org.citra.citra_emu.databinding.ActivityEmulationBinding
+import org.citra.citra_emu.dialogs.NetPlayDialog
 import org.citra.citra_emu.display.ScreenAdjustmentUtil
 import org.citra.citra_emu.display.SecondaryDisplay
 import org.citra.citra_emu.features.hotkeys.HotkeyUtility
@@ -43,11 +47,14 @@ import org.citra.citra_emu.features.settings.model.view.InputBindingSetting
 import org.citra.citra_emu.fragments.EmulationFragment
 import org.citra.citra_emu.fragments.MessageDialogFragment
 import org.citra.citra_emu.model.Game
+import org.citra.citra_emu.utils.BuildUtil
 import org.citra.citra_emu.utils.ControllerMappingHelper
 import org.citra.citra_emu.utils.FileBrowserHelper
 import org.citra.citra_emu.utils.EmulationLifecycleUtil
 import org.citra.citra_emu.utils.EmulationMenuSettings
+import org.citra.citra_emu.utils.FileUtil
 import org.citra.citra_emu.utils.Log
+import org.citra.citra_emu.utils.NetPlayManager
 import org.citra.citra_emu.utils.RefreshRateUtil
 import org.citra.citra_emu.utils.ThemeUtil
 import org.citra.citra_emu.viewmodel.EmulationViewModel
@@ -79,7 +86,9 @@ class EmulationActivity : AppCompatActivity() {
             return navHostFragment.getChildFragmentManager().fragments.last() as EmulationFragment
         }
 
+    private var isRotationBlocked: Boolean = true
     private var isEmulationRunning: Boolean = false
+    private var isEmulationReady: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         requestWindowFeature(Window.FEATURE_NO_TITLE)
@@ -88,12 +97,20 @@ class EmulationActivity : AppCompatActivity() {
 
         ThemeUtil.setTheme(this)
         settingsViewModel.settings.loadSettings()
+
+        screenAdjustmentUtil = ScreenAdjustmentUtil(this, windowManager, settingsViewModel.settings)
+
+        // Block orientation until emulation is ready to prevent unneccesary
+        // surface recreation until the renderer is ready.
+        isRotationBlocked = true
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LOCKED
+
         super.onCreate(savedInstanceState)
+        NativeLibrary.initMultiplayer()
         secondaryDisplay = SecondaryDisplay(this)
         secondaryDisplay.updateDisplay()
 
         binding = ActivityEmulationBinding.inflate(layoutInflater)
-        screenAdjustmentUtil = ScreenAdjustmentUtil(this, windowManager, settingsViewModel.settings)
         hotkeyUtility = HotkeyUtility(screenAdjustmentUtil, this)
         setContentView(binding.root)
 
@@ -118,8 +135,6 @@ class EmulationActivity : AppCompatActivity() {
         isEmulationRunning = true
         instance = this
 
-        applyOrientationSettings() // Check for orientation settings at startup
-
         val game = try {
             intent.extras?.let { extras ->
                 BundleCompat.getParcelable(extras, "game", Game::class.java)
@@ -135,13 +150,46 @@ class EmulationActivity : AppCompatActivity() {
         NativeLibrary.playTimeManagerStart(game.titleId)
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+
+        NativeLibrary.stopEmulation()
+        NativeLibrary.playTimeManagerStop()
+
+        isEmulationReady = false
+        isRotationBlocked = true
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LOCKED
+        emulationViewModel.setEmulationStarted(false)
+
+        val game = intent.extras?.let { extras ->
+            BundleCompat.getParcelable(extras, "game", Game::class.java)
+        }
+        if (game != null) {
+            NativeLibrary.playTimeManagerStart(game.titleId)
+        }
+
+        val navHostFragment =
+            supportFragmentManager.findFragmentById(R.id.fragment_container) as NavHostFragment
+        navHostFragment.navController.setGraph(R.navigation.emulation_navigation, intent.extras)
+    }
+
     // On some devices, the system bars will not disappear on first boot or after some
     // rotations. Here we set full screen immersive repeatedly in onResume and in
     // onWindowFocusChanged to prevent the unwanted status bar state.
     override fun onResume() {
-        super.onResume()
         enableFullscreenImmersive()
-        applyOrientationSettings() // Check for orientation settings changes on runtime
+        if (isEmulationReady) {
+            // If emulation is ready then unblock rotation
+            isRotationBlocked = false
+            applyOrientationSettings()
+            emulationViewModel.setEmulationStarted(true)
+        } else {
+            if (!isRotationBlocked) {
+                applyOrientationSettings()
+            }
+        }
+        super.onResume()
     }
 
     override fun onStop() {
@@ -150,8 +198,8 @@ class EmulationActivity : AppCompatActivity() {
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
-        super.onWindowFocusChanged(hasFocus)
         enableFullscreenImmersive()
+        super.onWindowFocusChanged(hasFocus)
     }
 
     public override fun onRestart() {
@@ -163,11 +211,15 @@ class EmulationActivity : AppCompatActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putBoolean("isEmulationRunning", isEmulationRunning)
+        outState.putBoolean("isEmulationReady", isEmulationReady)
+        outState.putBoolean("isRotationBlocked", isRotationBlocked)
     }
 
     override fun onRestoreInstanceState(savedInstanceState: Bundle) {
         super.onRestoreInstanceState(savedInstanceState)
         isEmulationRunning = savedInstanceState.getBoolean("isEmulationRunning", false)
+        isEmulationReady = savedInstanceState.getBoolean("isEmulationReady", false)
+        isRotationBlocked = savedInstanceState.getBoolean("isRotationBlocked", isRotationBlocked)
     }
 
     override fun onDestroy() {
@@ -177,6 +229,7 @@ class EmulationActivity : AppCompatActivity() {
         instance = null
         secondaryDisplay.releasePresentation()
         secondaryDisplay.releaseVD()
+        NetPlayDialog.stopWifiDirect()
 
         super.onDestroy()
     }
@@ -221,11 +274,25 @@ class EmulationActivity : AppCompatActivity() {
 
     fun onEmulationStarted() {
         emulationViewModel.setEmulationStarted(true)
+        isEmulationReady = true
+        if (isRotationBlocked) {
+            isRotationBlocked = false
+            applyOrientationSettings()
+        }
         Toast.makeText(
             applicationContext,
             getString(R.string.emulation_menu_help),
             Toast.LENGTH_LONG
         ).show()
+    }
+
+    fun displayMultiplayerDialog() {
+        val dialog = NetPlayDialog(this)
+        dialog.show()
+    }
+
+    fun addNetPlayMessages(type: Int, msg: String) {
+        NetPlayManager.addNetPlayMessage(type, msg)
     }
 
     private fun enableFullscreenImmersive() {
@@ -267,41 +334,34 @@ class EmulationActivity : AppCompatActivity() {
             return super.dispatchKeyEvent(event)
         }
 
-        val button =
-            preferences.getInt(InputBindingSetting.getInputButtonKey(event.keyCode), event.keyCode)
-        val action: Int = when (event.action) {
+        when (event.action) {
             KeyEvent.ACTION_DOWN -> {
-                hotkeyUtility.handleHotkey(button)
-
                 // On some devices, the back gesture / button press is not intercepted by androidx
                 // and fails to open the emulation menu. So we're stuck running deprecated code to
                 // cover for either a fault on androidx's side or in OEM skins (MIUI at least)
+
                 if (event.keyCode == KeyEvent.KEYCODE_BACK) {
                     // If the hotkey is pressed, we don't want to open the drawer
-                    if (!hotkeyUtility.HotkeyIsPressed) {
+                    if (!hotkeyUtility.hotkeyIsPressed) {
                         onBackPressed()
+                        return true
                     }
                 }
-
-                // Normal key events.
-                NativeLibrary.ButtonState.PRESSED
+                return hotkeyUtility.handleKeyPress(event)
             }
-
             KeyEvent.ACTION_UP -> {
-                hotkeyUtility.HotkeyIsPressed = false
-                NativeLibrary.ButtonState.RELEASED
+                return hotkeyUtility.handleKeyRelease(event)
             }
-            else -> return false
+            else -> {
+                return false;
+            }
         }
-        val input = event.device
-            ?: // Controller was disconnected
-            return false
-        return NativeLibrary.onGamePadEvent(input.descriptor, button, action)
     }
 
     private fun onAmiiboSelected(selectedFile: String) {
         val success = NativeLibrary.loadAmiibo(selectedFile)
         if (!success) {
+            Log.error("[EmulationActivity] Failed to load Amiibo file: $selectedFile")
             MessageDialogFragment.newInstance(
                 R.string.amiibo_load_error,
                 R.string.amiibo_load_error_message
@@ -524,13 +584,64 @@ class EmulationActivity : AppCompatActivity() {
         return true
     }
 
-    val openFileLauncher =
+    class SaveBinContract : ActivityResultContract<String, Intent?>() {
+        override fun createIntent(context: Context, input: String): Intent {
+            return Intent(Intent.ACTION_CREATE_DOCUMENT)
+                .setType("application/octet-stream")
+                .putExtra(Intent.EXTRA_TITLE, input)
+        }
+
+        override fun parseResult(resultCode: Int, intent: Intent?): Intent? = intent
+    }
+
+    var amiiboId = ""
+
+    val amiiboSaver = registerForActivityResult(
+        SaveBinContract()
+    ) { result: Intent? ->
+        if (result == null) {
+            return@registerForActivityResult
+        }
+
+        val uri = result.data ?: return@registerForActivityResult
+
+        android.util.Log.e("Amiibo", "Save file $uri")
+
+        FileUtil.deleteDocument(uri.toString())
+        var nativePath = "!" + NativeLibrary.getNativePath(uri)
+
+        if(!nativePath.endsWith(".bin")){
+            nativePath = "$nativePath.bin"
+        }
+
+        runCatching {
+            NativeLibrary.deleteDocument(nativePath)
+        }
+
+        val ret = NativeLibrary.makeAmiibo(amiiboId, nativePath)
+
+        if(ret){
+            Toast.makeText(applicationContext, "Amiibo File Success", Toast.LENGTH_LONG)
+                .show()
+        }else{
+            Toast.makeText(applicationContext, "Amiibo File Failure", Toast.LENGTH_LONG)
+                .show()
+        }
+    }
+
+    val openAmiiboFileLauncher =
         registerForActivityResult(OpenFileResultContract()) { result: Intent? ->
             if (result == null) return@registerForActivityResult
             val selectedFiles = FileBrowserHelper.getSelectedFiles(
                 result, applicationContext, listOf<String>("bin")
             ) ?: return@registerForActivityResult
-            onAmiiboSelected(selectedFiles[0])
+            if (BuildUtil.isGooglePlayBuild) {
+                onAmiiboSelected(selectedFiles[0])
+            } else {
+                val fileUri = selectedFiles[0].toUri()
+                val nativePath = "!" + NativeLibrary.getNativePath(fileUri)
+                onAmiiboSelected(nativePath)
+            }
         }
 
     val openImageLauncher =

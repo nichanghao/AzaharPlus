@@ -310,10 +310,20 @@
       <item>
        <widget class="QCheckBox" name="toggle_vsync">
         <property name="toolTip">
-         <string>VSync prevents the screen from tearing, but some graphics cards have lower performance with VSync enabled. Keep it enabled if you don't notice a performance difference.</string>
+         <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;VSync prevents the screen from tearing, but some graphics cards have lower performance with VSync enabled. Keep it enabled if you don't notice a performance difference.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
         </property>
         <property name="text">
          <string>Enable VSync</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QCheckBox" name="toggle_display_refresh_rate_detection">
+        <property name="toolTip">
+         <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;When enabled, this setting detects when the refresh rate of the screen is below that of the 3DS, and when it is, disables VSync automatically to avoid emulation speed being forced below 100%.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+        </property>
+        <property name="text">
+         <string>Enable display refresh rate detection</string>
         </property>
        </widget>
       </item>
@@ -362,7 +372,7 @@
                   <number>0</number>
                 </property>
                 <property name="maximum">
-                  <number>16000</number>
+                  <number>65000</number>
                 </property>
                 <property name="singleStep">
                   <number>100</number>
@@ -393,6 +403,16 @@
             </item>
           </layout>
         </widget>
+      </item>
+     <item>
+       <widget class="QCheckBox" name="simulate_3ds_gpu_timings">
+        <property name="toolTip">
+         <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Delays GPU completion events based on measurements taken from real hardware, so that games have more realistic GPU time measurements. Helps stabilize dynamic FPS games. Disabling this feature may improve performance in some rare cases at the cost of stability.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+        </property>
+        <property name="text">
+         <string>Simulate 3DS GPU timings</string>
+        </property>
+       </widget>
       </item>
      </layout>
     </widget>

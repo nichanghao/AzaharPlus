@@ -1,12 +1,9 @@
-//FILE MODIFIED BY AzaharPlus APRIL 2025
-
 // Copyright 2024 Azahar Emulator Project
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
 #pragma once
 
-#include "common/assert.h"
 #include "common/common_types.h"
 #include "common/logging/log.h"
 

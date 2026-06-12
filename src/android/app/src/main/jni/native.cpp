@@ -46,6 +46,7 @@
 #include "core/hw/unique_data.h"
 #include "core/loader/loader.h"
 #include "core/savestate.h"
+#include "core/zip_pass.h"
 #include "core/system_titles.h"
 #include "jni/android_common/android_common.h"
 #include "jni/applets/mii_selector.h"
@@ -53,6 +54,9 @@
 #include "jni/camera/ndk_camera.h"
 #include "jni/camera/still_image_camera.h"
 #include "jni/config.h"
+
+#include "network/announce_multiplayer_session.h"
+#include "core/loader/ncch.h"
 
 #ifdef ENABLE_OPENGL
 #include "jni/emu_window/emu_window_gl.h"
@@ -69,6 +73,7 @@
 #include "jni/input_manager.h"
 #include "jni/ndk_motion.h"
 #include "jni/util.h"
+#include "multiplayer.h"
 #include "video_core/debug_utils/debug_utils.h"
 #include "video_core/gpu.h"
 #include "video_core/renderer_base.h"
@@ -103,6 +108,10 @@ std::mutex paused_mutex;
 std::mutex running_mutex;
 std::condition_variable running_cv;
 
+// Abdroid Multiplayer which can be initialized with parameters
+std::unique_ptr<AndroidMultiplayer> multiplayer{nullptr};
+std::shared_ptr<Network::AnnounceMultiplayerSession> announce_multiplayer_session;
+
 std::string inserted_cartridge;
 
 } // Anonymous namespace
@@ -132,12 +141,13 @@ static bool HandleCoreError(Core::System::ResultStatus result, const std::string
                                         env->NewStringUTF(details.c_str())) != JNI_FALSE;
 }
 
-static void LoadDiskCacheProgress(VideoCore::LoadCallbackStage stage, int progress, int max) {
+static void LoadDiskCacheProgress(VideoCore::LoadCallbackStage stage, int progress, int max,
+                                  const std::string& object) {
     JNIEnv* env = IDCache::GetEnvForThread();
     env->CallStaticVoidMethod(IDCache::GetDiskCacheProgressClass(),
                               IDCache::GetDiskCacheLoadProgress(),
                               IDCache::GetJavaLoadCallbackStage(stage), static_cast<jint>(progress),
-                              static_cast<jint>(max));
+                              static_cast<jint>(max), env->NewStringUTF(object.c_str()));
 }
 
 static Camera::NDK::Factory* g_ndk_factory{};
@@ -219,7 +229,7 @@ static Core::System::ResultStatus RunCitra(const std::string& filepath) {
                                                                       true, shared_context);
 
 #elif ENABLE_VULKAN
-        window = std::make_unique<EmuWindow_Android_Vulkan>(s_surface, vulkan_library);
+        window = std::make_unique<EmuWindow_Android_Vulkan>(s_surface, vulkan_library, false);
         secondary_window =
             std::make_unique<EmuWindow_Android_Vulkan>(s_secondary_surface, vulkan_library, true);
 #else
@@ -269,7 +279,7 @@ static Core::System::ResultStatus RunCitra(const std::string& filepath) {
     stop_run = false;
     pause_emulation = false;
 
-    LoadDiskCacheProgress(VideoCore::LoadCallbackStage::Prepare, 0, 0);
+    LoadDiskCacheProgress(VideoCore::LoadCallbackStage::Prepare, 0, 0, "");
 
     system.GPU().ApplyPerProgramSettings(program_id);
 
@@ -277,7 +287,7 @@ static Core::System::ResultStatus RunCitra(const std::string& filepath) {
     system.GPU().Renderer().Rasterizer()->LoadDefaultDiskResources(stop_run,
                                                                    &LoadDiskCacheProgress);
 
-    LoadDiskCacheProgress(VideoCore::LoadCallbackStage::Complete, 0, 0);
+    LoadDiskCacheProgress(VideoCore::LoadCallbackStage::Complete, 0, 0, "");
 
     SCOPE_EXIT({ TryShutdown(); });
 
@@ -653,34 +663,38 @@ void Java_org_citra_citra_1emu_NativeLibrary_setUserDirectory(JNIEnv* env,
     FileUtil::SetCurrentDir(GetJString(env, j_directory));
 }
 
-jobjectArray Java_org_citra_citra_1emu_NativeLibrary_getInstalledGamePaths(
+jobjectArray Java_org_citra_citra_1emu_NativeLibrary_getInstalledGamePathsImpl(
     JNIEnv* env, [[maybe_unused]] jclass clazz) {
     std::vector<std::string> games;
-    const FileUtil::DirectoryEntryCallable ScanDir =
-        [&games, &ScanDir](u64*, const std::string& directory, const std::string& virtual_name) {
-            std::string path = directory + virtual_name;
-            if (FileUtil::IsDirectory(path)) {
-                path += '/';
-                FileUtil::ForeachDirectoryEntry(nullptr, path, ScanDir);
-            } else {
-                if (!FileUtil::Exists(path))
-                    return false;
-                auto loader = Loader::GetLoader(path);
-                if (loader) {
-                    bool executable{};
-                    const Loader::ResultStatus result = loader->IsExecutable(executable);
-                    if (Loader::ResultStatus::Success == result && executable) {
-                        games.emplace_back(path);
-                    }
+    Service::FS::MediaType media_type;
+    const FileUtil::DirectoryEntryCallable ScanDir = [&games, &ScanDir, &media_type](
+                                                         u64*, const std::string& directory,
+                                                         const std::string& virtual_name) {
+        std::string path = directory + virtual_name;
+        if (FileUtil::IsDirectory(path)) {
+            path += '/';
+            FileUtil::ForeachDirectoryEntry(nullptr, path, ScanDir);
+        } else {
+            if (!FileUtil::Exists(path))
+                return false;
+            auto loader = Loader::GetLoader(path);
+            if (loader) {
+                bool executable{};
+                const Loader::ResultStatus result = loader->IsExecutable(executable);
+                if (Loader::ResultStatus::Success == result && executable) {
+                    games.emplace_back(path + "|" + std::to_string(static_cast<int>(media_type)));
                 }
             }
-            return true;
-        };
+        }
+        return true;
+    };
+    media_type = Service::FS::MediaType::SDMC;
     ScanDir(nullptr, "",
             FileUtil::GetUserPath(FileUtil::UserPath::SDMCDir) +
                 "Nintendo "
                 "3DS/00000000000000000000000000000000/"
                 "00000000000000000000000000000000/title/00040000");
+    media_type = Service::FS::MediaType::NAND;
     ScanDir(nullptr, "",
             FileUtil::GetUserPath(FileUtil::UserPath::NANDDir) +
                 "00000000000000000000000000000000/title/00040010");
@@ -733,6 +747,18 @@ jobject Java_org_citra_citra_1emu_NativeLibrary_downloadTitleFromNus([[maybe_unu
         return IDCache::GetJavaCiaInstallStatus(status);
     }
     return IDCache::GetJavaCiaInstallStatus(Service::AM::InstallStatus::Success);
+}
+
+jint Java_org_citra_citra_1emu_NativeLibrary_importZipPass(JNIEnv *env, jobject thiz, jstring path) {
+    return Core::importZipPass(GetJString(env, path));
+}
+
+jint Java_org_citra_citra_1emu_NativeLibrary_exportZipPass(JNIEnv *env, jobject thiz, jstring path) {
+    return Core::exportZipPass(GetJString(env, path));
+}
+
+jint Java_org_citra_citra_1emu_NativeLibrary_clearStreetPassConfig(JNIEnv *env, jobject thiz) {
+    return Core::clearStreetPassConfig();
 }
 
 [[maybe_unused]] static bool CheckKgslPresent() {
@@ -810,6 +836,13 @@ jboolean Java_org_citra_citra_1emu_NativeLibrary_onGamePadEvent([[maybe_unused]]
     }
 
     return static_cast<jboolean>(consumed);
+}
+
+jstring Java_org_citra_citra_1emu_NativeLibrary_getSystemUsername(JNIEnv* env,
+                                                                  [[maybe_unused]] jobject obj) {
+    auto& system = Core::System::GetInstance();
+    auto username = Service::CFG::GetModule(system)->GetUsername();
+    return ToJString(env, Common::UTF16ToUTF8(username));
 }
 
 jboolean Java_org_citra_citra_1emu_NativeLibrary_onGamePadMoveEvent(
@@ -978,6 +1011,17 @@ void Java_org_citra_citra_1emu_NativeLibrary_reloadCameraDevices([[maybe_unused]
     }
 }
 
+jstring Java_org_citra_citra_1emu_NativeLibrary_getProgramId([[maybe_unused]] JNIEnv* env,
+                                                             [[maybe_unused]] jobject obj) {
+    return ToJString(env, Loader::getProgramId());
+}
+
+jboolean Java_org_citra_citra_1emu_NativeLibrary_makeAmiibo(JNIEnv* env,
+                                                            [[maybe_unused]] jobject obj,
+                                                            jstring id, jstring filepath) {
+    return Service::NFC::makeAmiiboFile(GetJString(env, id), GetJString(env, filepath));
+}
+
 jboolean Java_org_citra_citra_1emu_NativeLibrary_loadAmiibo(JNIEnv* env,
                                                             [[maybe_unused]] jobject obj,
                                                             jstring j_file) {
@@ -1002,6 +1046,92 @@ void Java_org_citra_citra_1emu_NativeLibrary_removeAmiibo([[maybe_unused]] JNIEn
     }
 
     nfc->RemoveAmiibo();
+}
+
+// init multiplayer class
+JNIEXPORT void JNICALL
+Java_org_citra_citra_1emu_NativeLibrary_initMultiplayer(JNIEnv* env, [[maybe_unused]] jobject obj) {
+    if (multiplayer) {
+        return;
+    }
+
+    announce_multiplayer_session = std::make_shared<Network::AnnounceMultiplayerSession>();
+
+    multiplayer = std::make_unique<AndroidMultiplayer>(Core::System::GetInstance(),
+                                                       announce_multiplayer_session);
+    multiplayer->NetworkInit();
+}
+
+JNIEXPORT jobjectArray JNICALL Java_org_citra_citra_1emu_utils_NetPlayManager_netPlayGetPublicRooms(
+    JNIEnv* env, [[maybe_unused]] jobject obj) {
+    return ToJStringArray(env, multiplayer->NetPlayGetPublicRooms());
+}
+
+JNIEXPORT jint JNICALL Java_org_citra_citra_1emu_utils_NetPlayManager_netPlayCreateRoom(
+    JNIEnv* env, [[maybe_unused]] jobject obj, jstring ipaddress, jint port, jstring username,
+    jstring preferedGameName, jlong preferedGameId, jstring password, jstring room_name,
+    jint max_players) {
+    return static_cast<jint>(multiplayer->NetPlayCreateRoom(
+        GetJString(env, ipaddress), port, GetJString(env, username),
+        GetJString(env, preferedGameName), preferedGameId, GetJString(env, password),
+        GetJString(env, room_name), max_players));
+}
+
+JNIEXPORT jint JNICALL Java_org_citra_citra_1emu_utils_NetPlayManager_netPlayJoinRoom(
+    JNIEnv* env, [[maybe_unused]] jobject obj, jstring ipaddress, jint port, jstring username,
+    jstring password) {
+    return static_cast<jint>(multiplayer->NetPlayJoinRoom(
+        GetJString(env, ipaddress), port, GetJString(env, username), GetJString(env, password)));
+}
+
+JNIEXPORT jobjectArray JNICALL Java_org_citra_citra_1emu_utils_NetPlayManager_netPlayRoomInfo(
+    JNIEnv* env, [[maybe_unused]] jobject obj) {
+    return ToJStringArray(env, multiplayer->NetPlayRoomInfo());
+}
+
+JNIEXPORT jboolean JNICALL Java_org_citra_citra_1emu_utils_NetPlayManager_netPlayIsJoined(
+    [[maybe_unused]] JNIEnv* env, [[maybe_unused]] jobject obj) {
+    return multiplayer->NetPlayIsJoined();
+}
+
+JNIEXPORT jboolean JNICALL Java_org_citra_citra_1emu_utils_NetPlayManager_netPlayIsHostedRoom(
+    [[maybe_unused]] JNIEnv* env, [[maybe_unused]] jobject obj) {
+    return multiplayer->NetPlayIsHostedRoom();
+}
+
+JNIEXPORT void JNICALL Java_org_citra_citra_1emu_utils_NetPlayManager_netPlaySendMessage(
+    JNIEnv* env, [[maybe_unused]] jobject obj, jstring msg) {
+    multiplayer->NetPlaySendMessage(GetJString(env, msg));
+}
+
+JNIEXPORT void JNICALL Java_org_citra_citra_1emu_utils_NetPlayManager_netPlayKickUser(
+    JNIEnv* env, [[maybe_unused]] jobject obj, jstring username) {
+    multiplayer->NetPlayKickUser(GetJString(env, username));
+}
+
+JNIEXPORT void JNICALL Java_org_citra_citra_1emu_utils_NetPlayManager_netPlayLeaveRoom(
+    [[maybe_unused]] JNIEnv* env, [[maybe_unused]] jobject obj) {
+    multiplayer->NetPlayLeaveRoom();
+}
+
+JNIEXPORT jboolean JNICALL Java_org_citra_citra_1emu_utils_NetPlayManager_netPlayIsModerator(
+    [[maybe_unused]] JNIEnv* env, [[maybe_unused]] jobject obj) {
+    return multiplayer->NetPlayIsModerator();
+}
+
+JNIEXPORT jobjectArray JNICALL Java_org_citra_citra_1emu_utils_NetPlayManager_netPlayGetBanList(
+    JNIEnv* env, [[maybe_unused]] jobject obj) {
+    return ToJStringArray(env, multiplayer->NetPlayGetBanList());
+}
+
+JNIEXPORT void JNICALL Java_org_citra_citra_1emu_utils_NetPlayManager_netPlayBanUser(
+    JNIEnv* env, [[maybe_unused]] jobject obj, jstring username) {
+    multiplayer->NetPlayBanUser(GetJString(env, username));
+}
+
+JNIEXPORT void JNICALL Java_org_citra_citra_1emu_utils_NetPlayManager_netPlayUnbanUser(
+    JNIEnv* env, [[maybe_unused]] jobject obj, jstring username) {
+    multiplayer->NetPlayUnbanUser(GetJString(env, username));
 }
 
 JNIEXPORT jobject JNICALL Java_org_citra_citra_1emu_utils_CiaInstallWorker_installCIA(
@@ -1117,6 +1247,65 @@ jlong Java_org_citra_citra_1emu_NativeLibrary_playTimeManagerGetCurrentTitleId(J
 void Java_org_citra_citra_1emu_NativeLibrary_setInsertedCartridge(JNIEnv* env, jobject obj,
                                                                   jstring path) {
     inserted_cartridge = GetJString(env, path);
+}
+
+jboolean Java_org_citra_citra_1emu_NativeLibrary_uninstallTitle(JNIEnv* env, jobject obj,
+                                                                jlong j_titleid, jint j_mediatype) {
+    const auto titleid = static_cast<u64>(j_titleid);
+    const auto result =
+        Service::AM::UninstallProgram(static_cast<Service::FS::MediaType>(j_mediatype), titleid);
+    if (result.IsError()) {
+        LOG_ERROR(Frontend, "Failed to uninstall '{}': 0x{:08X}", std::to_string(titleid),
+                  result.raw);
+        return false;
+    }
+    return true;
+}
+
+jboolean Java_org_citra_citra_1emu_NativeLibrary_nativeFileExists(JNIEnv* env, jobject obj,
+                                                                  jstring j_path) {
+    const auto path = GetJString(env, j_path);
+    return FileUtil::Exists(path);
+}
+
+void Java_org_citra_citra_1emu_NativeLibrary_deleteOpenGLShaderCache(JNIEnv* env, jobject obj,
+                                                                     jlong title_id) {
+    for (const std::string_view cache_type : {"separable", "conventional"}) {
+        const std::string path =
+            fmt::format("{}opengl/precompiled/{}/{:016X}.bin",
+                        FileUtil::GetUserPath(FileUtil::UserPath::ShaderDir), cache_type, title_id);
+        LOG_INFO(Frontend, "Deleting shader file: {}", path);
+        FileUtil::Delete(path);
+    }
+    const std::string path =
+        fmt::format("{}opengl/transferable/{:016X}.bin",
+                    FileUtil::GetUserPath(FileUtil::UserPath::ShaderDir), title_id);
+    LOG_INFO(Frontend, "Deleting shader file: {}", path);
+    FileUtil::Delete(path);
+}
+
+void Java_org_citra_citra_1emu_NativeLibrary_deleteVulkanShaderCache(JNIEnv* env, jobject obj,
+                                                                     jlong title_id) {
+    for (const std::string_view cache_type : {"vs", "fs", "gs", "pl"}) {
+        const std::string path =
+            fmt::format("{}vulkan/transferable/{:016X}_{}.vkch",
+                        FileUtil::GetUserPath(FileUtil::UserPath::ShaderDir), title_id, cache_type);
+        LOG_INFO(Frontend, "Deleting shader file: {}", path);
+        FileUtil::Delete(path);
+    }
+
+    FileUtil::ForeachDirectoryEntry(
+        nullptr,
+        fmt::format("{}vulkan/pipeline", FileUtil::GetUserPath(FileUtil::UserPath::ShaderDir)),
+        [title_id]([[maybe_unused]] u64* num_entries_out, const std::string& directory,
+                   const std::string& virtual_name) {
+            if (virtual_name.starts_with(fmt::format("{:016X}", title_id))) {
+                std::string path = directory + DIR_SEP + virtual_name;
+                LOG_INFO(Frontend, "Deleting shader file: {}", path);
+                FileUtil::Delete(path);
+            }
+            return true;
+        });
 }
 
 } // extern "C"

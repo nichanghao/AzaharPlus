@@ -67,7 +67,7 @@
     <string name="notification_warning">Ne pas autoriser les notifications ?</string>
     <string name="notification_warning_description">Azahar ne pourra pas vous avertir des informations importantes.</string>
     <string name="filesystem_permission_warning">Autorisations manquantes</string>
-    <string name="filesystem_permission_warning_description">Azahar a besoin de l\'autorisation de gérer les fichiers de cet appareil afin de stocker et gérer ses données.\n\nVeuillez accorder l\'autorisation \"Accès à tous les fichiers\" avant de continuer.</string>
+    <string name="filesystem_permission_warning_description">Azahar a besoin de l\'autorisation de gérer les fichiers de cet appareil afin de stocker et gérer ses données.\n\nVeuillez accorder l\'autorisation \"Accès à tous les fichiers\" pour continuer.</string>
     <string name="camera_permission">Caméra</string>
     <string name="camera_permission_description">Accorder l\'autorisation de la caméra ci-dessous pour émuler la caméra 3DS.</string>
     <string name="microphone_permission">Microphone</string>
@@ -108,9 +108,17 @@
     <string name="search_installed">Installé</string>
 
     <!-- Input related strings -->
+    <string name="controller_auto_map">Assigner les boutons de la manette automatiquement</string>
+    <string name="controller_auto_map_description">Applique un assignement standard de manette pour tous les boutons et axes</string>
+    <string name="auto_map_prompt">Appuyez sur ce bouton de votre manette !</string>
+    <string name="auto_map_image_description">Les quatre boutons situés à droite de la 3DS avec le bouton A surligné</string>
+    <string name="controller_clear_all">Réinitialiser toutes les assignations de touche</string>
+    <string name="controller_clear_all_confirm">Cela effacera toutes les assignations de touche de manette actuelles.</string>
     <string name="controller_circlepad">Pad circulaire</string>
     <string name="controller_c">Stick C</string>
     <string name="controller_hotkeys">Raccourcis</string>
+    <string name="controller_hotkeys_description">Si la touche \"Activer les raccourcis\" est assignée, celle-ci doit être pressée en plus de tout autre touche de raccourci.</string>
+    <string name="controller_hotkey_enable_button">Activer les raccourcis</string>
     <string name="controller_triggers">Gachettes</string>
     <string name="controller_trigger">Déclencheur</string>
     <string name="controller_dpad">Manette +</string>
@@ -204,6 +212,8 @@
     <string name="storage">Stockage</string>
     <string name="compress_cia_installs">Compresser le contenu CIA installé</string>
     <string name="compress_cia_installs_description">Compresse le contenu des fichiers CIA lorsqu\'ils sont installés sur la carte SD émulée. N\'affecte que le contenu CIA installé lorsque le paramètre est activé.</string>
+    <string name="async_fs_operations">Opérations du système de fichiers asynchrones</string>
+    <string name="async_fs_operations_description">Rend les accès au système de fichier émulé asynchrones. Réduit grandement les saccades liées au système de fichiers, mais peut légèrement augmenter les temps de chargement.</string>
 
     <!-- Camera settings strings -->
     <string name="inner_camera">Caméra intérieure</string>
@@ -229,10 +239,14 @@
     <string name="async_shaders_description">Compile les shaders en arrière-plan pour réduire les saccades pendant le jeu. Lorsqu\'il est activé, prévoyez des problèmes graphiques temporaires.</string>
     <string name="linear_filtering">Filtrage linéaire</string>
     <string name="linear_filtering_description">Active le filtrage linéaire, qui améliorera le lissage graphique du jeu.</string>
+    <string name="use_integer_scaling">Redimensionnement par nombre entier</string>
+    <string name="use_integer_scaling_description">Redimensionne les écrans avec un multiple entier de la taille de l\'écran original de la 3DS. Pour les dispositions avec deux tailles d\'écrans différentes, c\'est l\'écran le plus large qui est redimensionné par un multiple entier.</string>
     <string name="texture_filter_name">Filtrage des textures</string>
     <string name="texture_filter_description">Améliore l\'aspect visuel des applications en appliquant un filtre aux textures. Les filtres pris en charge sont Anime4K Ultrafast, Bicubique, ScaleForce, xBRZ freescale et MMPX.</string>
-    <string name="delay_render_thread">Retarder le thread de rendu du jeu</string>
+    <string name="delay_render_thread">Retarder le fil de rendu du jeu</string>
     <string name="delay_render_thread_description">Délai le thread de rendu du jeu lorsqu\'il soumet des données au GPU. Cela permet de résoudre les problèmes de performance dans les (très rares) applications avec des fréquences d\'images dynamiques.</string>
+    <string name="simulate_3ds_gpu_timings">Simuler les timings du GPU de la 3DS</string>
+    <string name="simulate_3ds_gpu_timings_description">Retarde les évènements de complétion du GPU en suivant des mesures prises sur du matériel réel, afin que les jeux aient des mesure de temps de GPU plus réalistes. Aide à stabiliser les jeux à taux de rafraichissement dynamique. Désactiver cette fonctionnalité peut améliorer la performance dans de rares cas, au détriment de la stabilité.</string>
     <string name="advanced">Avancé</string>
     <string name="texture_sampling_name">Échantillonnage de texture</string>
     <string name="texture_sampling_description">Remplace le filtre d\'échantillonnage utilisé par les jeux. Cela peut être utile dans certains cas où les jeux se comportent mal lors de la conversion ascendante. En cas de doute, réglez ce paramètre sur « Contrôlé par le jeu ».</string>
@@ -305,6 +319,8 @@
     <string name="audio_stretch_description">Étire le son pour réduire les saccades. Lorsqu\'il est activé, la latence est augmentée et les performances sont légèrement réduites.</string>
     <string name="realtime_audio">Activer l\'audio en temps réel</string>
     <string name="realtime_audio_description">Adapte la vitesse de lecture de l\'audio afin de ne pas être perturbé par les pertes de framerate. Ceci veut dire que l\'audio sera joué correctement même si le jeu n\'est pas aussi rapide. Peut provoquer des problèmes de synchronisation audio.</string>
+    <string name="simulate_headphones_plugged">Simuler le branchement d\'écouteurs</string>
+    <string name="simulate_headphones_plugged_description">Simule si des écouteurs sont branchés à la console 3DS émulée.</string>
     <string name="audio_input_type">Périphérique d\'entrée audio</string>
     <string name="sound_output_mode">Mode de sortie audio</string>
 
@@ -315,10 +331,10 @@
     <string name="hw_shaders_description">Utilise le hardware pour émuler les shaders de la 3DS. Lorsqu\'il est activé, la performance des jeux sera améliorée de manière significative.</string>
     <string name="cpu_clock_speed">Fréquence d\'horloge du CPU</string>
     <string name="vsync">Activer la synchronisation verticale (VSync)</string>
-    <string name="vsync_description">Synchronise la fréquence d\'images du jeu avec la fréquence de rafraîchissement de votre appareil. Peut rajouter de la latence d\'entrée mais peut réduire le tearing dans certains cas.</string>
+    <string name="vsync_description">Synchronise la fréquence d\'images du jeu avec la fréquence de rafraîchissement de votre appareil. Peut rajouter de la latence d\'entrée mais peut réduire le déchirement d\'écran dans certains cas.</string>
     <string name="renderer_debug">Rendu de débogage</string>
     <string name="renderer_debug_description">Enregistre des informations de débogage supplémentaires liées aux graphiques. Lorsqu\'il est activé, les performances du jeu seront significativement réduites.</string>
-    <string name="instant_debug_log">Vider la sortie des logs sur chaque message</string>
+    <string name="instant_debug_log">Vider la sortie des logs à chaque message</string>
     <string name="instant_debug_log_description">Enregistre immédiatement le log de débogage dans un fichier. A utiliser si Azahar se plante et que la sortie du journal est coupée.</string>
     <string name="delay_start_lle_modules">Démarrage différé avec les modules LLE</string>
     <string name="delay_start_lle_modules_description">Retarde le démarrage de l\'application lorsque les modules LLE sont activés.</string>
@@ -326,6 +342,8 @@
     <string name="deterministic_async_operations_description">Rend les opérations asynchrones déterministes pour le débogage. L\'activation de cette fonction peut entraîner des blocages.</string>
     <string name="enable_rpc_server">Activer le serveur RPC</string>
     <string name="enable_rpc_server_desc">Active le serveur RPC sur le port 45987. Cela permet de lire/écrire à distance la mémoire invitée.</string>
+    <string name="toggle_unique_data_console_type">Basculer le type de console des données uniques</string>
+    <string name="toggle_unique_data_console_type_desc">Change le type de console des données uniques (Old 3DS &#8596; New 3DS) afin de pouvoir télécharger le firmware système opposé depuis les paramètres de la console.</string>
     <string name="shader_jit">Activer Shader JIT</string>
     <string name="shader_jit_description">Utilisez le moteur JIT à la place de l\'interpréteur pour l\'émulation des shaders logiciels.</string>
 
@@ -336,6 +354,8 @@
     <string name="layout_screen_orientation_landscape_reverse">Paysage inversé</string>
     <string name="layout_screen_orientation_portrait">Portait</string>
     <string name="layout_screen_orientation_portrait_reverse">Portait inversé</string>
+    <string name="layouts_to_cycle">Dispositions à alterner</string>
+    <string name="layouts_to_cycle_description">Quelles dispositions sont alternées par le raccourci Alterner les dispositions</string>
     <string name="aspect_ratio_default">Par défaut</string>
     <string name="aspect_ratio_16_9">16:9</string>
     <string name="aspect_ratio_4_3">4:3</string>
@@ -356,7 +376,6 @@
     <string name="learn_more">En savoir plus</string>
     <string name="close">Fermer</string>
     <string name="reset_to_default">Par défaut</string>
-    <string name="redump_games"><![CDATA[Suivez le guide pour extraire à nouveau les <a href=\"https://web.archive.org/web/20240304210021/https://citra-emu.org/wiki/dumping-game-cartridges/\">cartouches de jeu</a> ou les <a href=\"https://web.archive.org/web/20240304210011/https://citra-emu.org/wiki/dumping-installed-titles/\">jeux installés</a>.]]></string>
     <string name="option_default">Par défaut</string>
     <string name="none">Aucun</string>
     <string name="auto">Auto</string>
@@ -399,10 +418,38 @@
     <string name="preferences_layout">Disposition</string>
 
     <!-- ROM loading errors -->
+    <string name="loader_error_generic_title">Erreur lors du chargement de l\'application</string>
+    <string name="loader_error_invalid_format">Format d\'application invalide</string>
+    <string name="loader_error_invalid_format_description"><![CDATA[Le format de fichier d\'application n\'est pas supporté.<br>Assurez vous d\'utiliser un des formats compatibles : <ul><li>Images de cartouche : <b>.cci/.zcci/.3ds</b></li><li>Archives installables : <b>.cia/.zcia</b></li><li>Applications Homebrew : <b>.3dsx/.z3dsx</b></li><li>Conteneurs NCCH : <b>.cxi/.zcxi/.app</b></li><li>Fichiers ELF : <b>.elf/.axf</b></li></ul>]]></string>
+    <string name="loader_error_invalid_system_mode">Mode système invalide</string>
+    <string name="loader_error_invalid_system_mode_description">Les applications exclusives à la New 3DS ne peuvent pas être chargées sans activer le mode New 3DS.</string>
+    <string name="loader_error_applying_patches">Erreur lors de l\'application de patchs</string>
+    <string name="loader_error_applying_patches_description">Une erreur générique s\'est produite lors de l\'application de correctifs à l\'application. Veuillez consulter les logs pour plus de détails.</string>
+    <string name="loader_error_patch_wrong_application">Échec de l\'application d\'un correctif car il est conçu pour une autre application. Veuillez vous assurer que vous utilisez les correctifs pour la bonne application, région et version.</string>
     <string name="loader_error_encrypted">Votre ROM est chiffrée</string>
-    <string name="loader_error_invalid_format">Format de ROM non valide</string>
+    <string name="loader_error_encrypted_description"><![CDATA[Azahar ne supporte pas les applications encryptées. Lisez notre <a href=\"https://azahar-emu.org/blog/game-loading-changes/\">article</a> pour plus d\'informations.]]></string>
     <string name="loader_error_file_not_found">Le fichier ROM n\'existe pas</string>
     <string name="no_game_present">Aucun jeu démarrable présent !</string>
+
+    <string name="loader_error_generic">Une erreur s\'est produite lors du chargement de la ROM : \"%s (%d)\"</string>
+    <string name="core_error_success">Réussite</string>
+    <string name="core_error_not_initialized">Non initialisé</string>
+    <string name="core_error_get_loader">Aucun lanceur trouvé pour ce fichier, type de fichier incompatible</string>
+    <string name="core_error_system_mode">Échec lors de l\'analyse du fichier</string>
+    <string name="core_error_loader">Erreur de chargement générique</string>
+    <string name="core_error_loader_encrypted">Fichier encrypté</string>
+    <string name="core_error_loader_invalid_format">Fichier corrompu</string>
+    <string name="core_error_loader_gba_title">Le fichier est une application GBA</string>
+    <string name="core_error_loader_error_patches">Erreur lors de l\'application de patchs</string>
+    <string name="core_error_loader_patches_invalid_title">Les correctifs sont pour une application différente</string>
+    <string name="core_error_system_files">Fichiers systèmes manquants</string>
+    <string name="core_error_savestate">Échec de la sauvegarde du point de récupération</string>
+    <string name="core_error_artic_disconnected">Artic Base déconnecté</string>
+    <string name="core_error_n3ds_application">Le fichier est une application New 3DS</string>
+    <string name="core_error_core_exception_raised">Une erreur du cœur s\'est produite</string>
+    <string name="core_error_memory_exception_raised">Une erreur de mémoire s\'est produite</string>
+    <string name="core_error_shutdown_requested">Arrêt demandé</string>
+    <string name="core_error_unknown">Erreur inconnue</string>
 
     <!-- Emulation Menu -->
     <string name="emulation_menu_help">Appuyez sur Retour pour accéder au menu.</string>
@@ -473,7 +520,7 @@
     <string name="emulation_custom_layout_y">Position Y</string>
     <string name="emulation_custom_layout_width">Largeur</string>
     <string name="emulation_custom_layout_height">Hauteur</string>
-    <string name="emulation_cycle_landscape_layouts">Dispositions de cycle</string>
+    <string name="emulation_cycle_landscape_layouts">Dispositions à alterner</string>
     <string name="emulation_swap_screens">Permuter les écrans</string>
     <string name="emulation_rotate_upright">Tourner l\'écran à la verticale</string>
     <string name="emulation_touch_overlay_reset">Réinitialiser l\'overlay</string>
@@ -550,7 +597,11 @@
 
     <!-- Disk Shader Cache -->
     <string name="preparing_shaders">Préparation des shaders</string>
-    <string name="building_shaders">Construction des shaders</string>
+    <string name="building_shaders">Construction %s</string>
+    <string name="delete_shader_cache">Supprimer le cache de shaders</string>
+    <string name="delete_cache_select_backend">Sélectionnez l\'API graphique pour laquelle vous voulez supprimer le cache de shaders</string>
+    <string name="deleting_shader_cache">Suppression du cache de shaders pour cette application, veuillez patienter ...</string>
+    <string name="shader_cache_deleted">Le cache de shaders a été supprimé.</string>
 
     <!-- About Game Dialog -->
     <string name="play">Jouer</string>

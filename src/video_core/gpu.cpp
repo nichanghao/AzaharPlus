@@ -9,6 +9,7 @@
 #include "core/core_timing.h"
 #include "core/hle/service/gsp/gsp_gpu.h"
 #include "core/hle/service/plgldr/plgldr.h"
+#include "core/loader/loader.h"
 #include "video_core/debug_utils/debug_utils.h"
 #include "video_core/gpu.h"
 #include "video_core/gpu_debugger.h"
@@ -24,6 +25,63 @@ namespace VideoCore {
 
 constexpr VAddr VADDR_LCD = 0x1ED02000;
 constexpr VAddr VADDR_GPU = 0x1EF00000;
+
+class DelayGenerator {
+private:
+    DelayGenerator() = default;
+
+    // Average transfer speed based on measurements taken from real
+    // hardware. 4 different modes have been taken into consideration:
+    // RAM -> RAM, RAM -> VRAM, VRAM -> RAM and VRAM -> VRAM.
+    // Furthermore, measurements are split into DMA transfers and tex
+    // copies. For simplicity, we will assume fills are as fast as
+    // texture copies.
+
+    static constexpr double mibps_to_ns_per_byte(double mib_per_sec) {
+        return 1'000'000'000.0 / (mib_per_sec * 1024.0 * 1024.0);
+    }
+
+    static constexpr std::array<std::array<double, 4>, 2> speed_mibps = {
+        {{
+             190.0, // DMA RAMTORAM
+             310.0, // DMA RAMTOVRAM
+             380.0, // DMA VRAMTORAM
+             380.0, // DMA VRAMTOVRAM
+         },
+         {
+             450.0,  // TEX RAMTORAM
+             3100.0, // TEX RAMTOVRAM
+             5400.0, // TEX VRAMTORAM
+             5400.0, // TEX VRAMTOVRAM
+         }}};
+
+public:
+    enum class CopyMode {
+        RAMTORAM,
+        RAMTOVRAM,
+        VRAMTORAM,
+        VRAMTOVRAM,
+    };
+
+    static CopyMode GetCopyMode(bool input_vram, bool output_vram) {
+        if (!input_vram && !output_vram) {
+            return CopyMode::RAMTORAM;
+        } else if (!input_vram && output_vram) {
+            return CopyMode::RAMTOVRAM;
+        } else if (input_vram && !output_vram) {
+            return CopyMode::VRAMTORAM;
+        } else {
+            return CopyMode::VRAMTOVRAM;
+        }
+    }
+
+    static u64 CalculateDelayNanoseconds(CopyMode mode, bool is_textre, size_t size) {
+        double base_ns_per_byte =
+            mibps_to_ns_per_byte(speed_mibps[is_textre][static_cast<u32>(mode)]);
+
+        return static_cast<u64>(size * base_ns_per_byte);
+    }
+};
 
 MICROPROFILE_DEFINE(GPU_DisplayTransfer, "GPU", "DisplayTransfer", MP_RGB(100, 100, 255));
 MICROPROFILE_DEFINE(GPU_CmdlistProcessing, "GPU", "Cmdlist Processing", MP_RGB(100, 255, 100));
@@ -101,7 +159,17 @@ void GPU::Execute(const Service::GSP::Command& command) {
         const auto process = impl->system.Kernel().GetCurrentProcess();
         impl->memory.CopyBlock(*process, command.dma_request.dest_address,
                                command.dma_request.source_address, command.dma_request.size);
-        impl->signal_interrupt(Service::GSP::InterruptId::DMA);
+
+        auto is_vram = [&](u32 addr) {
+            return addr >= Memory::VRAM_VADDR && addr <= Memory::VRAM_VADDR_END;
+        };
+
+        u64 delay = DelayGenerator::CalculateDelayNanoseconds(
+            DelayGenerator::GetCopyMode(is_vram(command.dma_request.source_address),
+                                        is_vram(command.dma_request.dest_address)),
+            false, command.dma_request.size);
+
+        impl->signal_interrupt(Service::GSP::InterruptId::DMA, delay);
         break;
     }
     case CommandId::SubmitCmdList: {
@@ -360,13 +428,18 @@ void GPU::MemoryFill(u32 index, u32 intr_index) {
         impl->sw_blitter->MemoryFill(config);
     }
 
+    // Treat fill as texture transfer from VRAM
+    u64 delay = DelayGenerator::CalculateDelayNanoseconds(
+        DelayGenerator::GetCopyMode(true, config.IsVRAM()), true,
+        config.GetEndAddress() - config.GetStartAddress());
+
     // It seems that it won't signal interrupt if "address_start" is zero.
     // TODO: hwtest this
     if (config.GetStartAddress() != 0) {
         if (intr_index == 0) {
-            impl->signal_interrupt(Service::GSP::InterruptId::PSC0);
+            impl->signal_interrupt(Service::GSP::InterruptId::PSC0, delay);
         } else if (intr_index == 1) {
-            impl->signal_interrupt(Service::GSP::InterruptId::PSC1);
+            impl->signal_interrupt(Service::GSP::InterruptId::PSC1, delay);
         }
     }
 
@@ -390,11 +463,15 @@ void GPU::MemoryTransfer() {
         impl->debug_context->OnEvent(Pica::DebugContext::Event::IncomingDisplayTransfer, nullptr);
     }
 
+    u64 delay{};
     // Perform memory transfer
     if (config.is_texture_copy) {
         if (!impl->rasterizer->AccelerateTextureCopy(config)) {
             impl->sw_blitter->TextureCopy(config);
         }
+        delay = DelayGenerator::CalculateDelayNanoseconds(
+            DelayGenerator::GetCopyMode(config.IsInputVRAM(), config.IsOutputVRAM()), true,
+            config.texture_copy.size);
     } else {
         if (right_eye_disabler->ShouldAllowDisplayTransfer(config.GetPhysicalInputAddress(),
                                                            config.input_height)) {
@@ -402,11 +479,14 @@ void GPU::MemoryTransfer() {
                 impl->sw_blitter->DisplayTransfer(config);
             }
         }
+        delay = DelayGenerator::CalculateDelayNanoseconds(
+            DelayGenerator::GetCopyMode(config.IsInputVRAM(), config.IsOutputVRAM()), true,
+            config.input_width * config.input_height * BytesPerPixel(config.input_format));
     }
 
     // Complete transfer.
     config.trigger.Assign(0);
-    impl->signal_interrupt(Service::GSP::InterruptId::PPF);
+    impl->signal_interrupt(Service::GSP::InterruptId::PPF, delay);
 }
 
 void GPU::VBlankCallback(std::uintptr_t user_data, s64 cycles_late) {
@@ -414,11 +494,58 @@ void GPU::VBlankCallback(std::uintptr_t user_data, s64 cycles_late) {
     impl->renderer->SwapBuffers();
 
     // Signal to GSP that GPU interrupt has occurred
-    impl->signal_interrupt(Service::GSP::InterruptId::PDC0);
-    impl->signal_interrupt(Service::GSP::InterruptId::PDC1);
+    impl->signal_interrupt(Service::GSP::InterruptId::PDC0, 0);
+    impl->signal_interrupt(Service::GSP::InterruptId::PDC1, 0);
 
     // Reschedule recurrent event
     impl->timing.ScheduleEvent(FRAME_TICKS - cycles_late, impl->vblank_event);
+}
+
+void GPU::RecreateRenderer(Frontend::EmuWindow& emu_window, Frontend::EmuWindow* secondary_window) {
+    // Reset the renderer (this will destroy OpenGL resources)
+    impl->renderer.reset();
+
+    // Create a new renderer
+    impl->renderer =
+        VideoCore::CreateRenderer(emu_window, secondary_window, impl->pica, impl->system);
+    impl->rasterizer = impl->renderer->Rasterizer();
+
+    // Rebind the rasterizer to the PICA GPU
+    impl->pica.BindRasterizer(impl->rasterizer);
+
+    // Update the sw_blitter with the new rasterizer
+    impl->sw_blitter = std::make_unique<SwRenderer::SwBlitter>(impl->memory, impl->rasterizer);
+
+    // Re-apply per-game configuration and reload disk shader cache
+    u64 program_id{};
+    impl->system.GetAppLoader().ReadProgramId(program_id);
+    ApplyPerProgramSettings(program_id);
+    if (Settings::values.use_disk_shader_cache) {
+        impl->renderer->Rasterizer()->LoadDefaultDiskResources(false, nullptr);
+    }
+
+    // Mark ALL GPU registers as dirty so current state gets uploaded to new renderer
+    impl->pica.dirty_regs.SetAllDirty();
+
+    // Also mark shader setups as dirty so uniforms get re-uploaded and
+    // stale pointers to the old rasterizer's JIT cache are cleared.
+    impl->pica.vs_setup.uniforms_dirty = true;
+    impl->pica.vs_setup.cached_shader = nullptr;
+    impl->pica.gs_setup.uniforms_dirty = true;
+    impl->pica.gs_setup.cached_shader = nullptr;
+
+    // Mark all cached LUT/table state in pica as dirty
+    impl->pica.lighting.lut_dirty = impl->pica.lighting.LutAllDirty;
+    impl->pica.fog.lut_dirty = true;
+    impl->pica.proctex.table_dirty = impl->pica.proctex.TableAllDirty;
+}
+
+void GPU::ReleaseRenderer() {
+    // Just reset the renderer to release OpenGL resources
+    // Don't null out rasterizer pointer as it will become dangling
+    impl->renderer.reset();
+    impl->sw_blitter.reset();
+    LOG_INFO(HW_GPU, "Renderer released for context destroy");
 }
 
 template <class Archive>

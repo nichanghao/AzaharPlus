@@ -23,6 +23,7 @@
 #include <QTranslator>
 #include "citra_qt/compatibility_list.h"
 #include "citra_qt/hotkeys.h"
+#include "citra_qt/notification_led.h"
 #include "citra_qt/user_data_migration.h"
 #include "core/core.h"
 #include "core/savestate.h"
@@ -149,6 +150,7 @@ signals:
     void CIAInstallReport(Service::AM::InstallStatus status, QString filepath);
     void CompressFinished(bool is_compress, bool success);
     void CIAInstallFinished();
+    void InfoLEDColorChanged();
     // Signal that tells widgets to update icons to use the current theme
     void UpdateThemedIcons();
 
@@ -157,6 +159,8 @@ private:
     void InitializeDebugWidgets();
     void InitializeRecentFileMenuActions();
     void InitializeSaveStateMenuActions();
+    void InitializeAmiibos();
+    void UpdateAmiibos();
 
     void SetDefaultUIGeometry();
     void SyncMenuUISettings();
@@ -231,7 +235,7 @@ private:
     void ShowFFmpegErrorMessage();
 
 private slots:
-    void OnStartGame();
+    void OnResumeGame(bool first_start);
     void OnRestartGame();
     void OnPauseGame();
     void OnPauseContinueGame();
@@ -256,13 +260,21 @@ private slots:
     void OnMenuConnectArticBase();
     void OnMenuRemoveAzaharEncryption();
     void OnMenuRevertEncryptionRemoval();
+	void OnMenuLibzipLicence();
+    void OnDownloadSystemFilesMenu(u32 region);
     void OnMenuBootHomeMenu(u32 region);
     void OnUpdateProgress(std::size_t written, std::size_t total);
     void OnCIAInstallReport(Service::AM::InstallStatus status, QString filepath);
     void OnCompressFinished(bool is_compress, bool success);
     void OnCIAInstallFinished();
     void OnMenuRecentFile();
+    void OnPreviousAmiibo();
+    void OnMenuAmiiboAction();
+    void OnMenuAmiiboFileAction();
     void OnConfigure();
+    void OnExportZipPass();
+    void OnImportZipPass();
+    void OnClearStreetPassConfig();
     void OnLoadAmiibo();
     void OnRemoveAmiibo();
     void OnOpenCitraFolder();
@@ -315,7 +327,7 @@ private slots:
     void OnEmulatorUpdateAvailable();
 #endif
     void OnSwitchDiskResources(VideoCore::LoadCallbackStage stage, std::size_t value,
-                               std::size_t total);
+                               std::size_t total, const std::string& object);
 #ifdef ENABLE_DEVELOPER_OPTIONS
     void StartLaunchStressTest(const QString& game_path);
 #endif
@@ -367,6 +379,8 @@ private:
     bool message_label_used_for_movie = false;
 
     MultiplayerState* multiplayer_state = nullptr;
+
+    LedWidget* notification_led = nullptr;
 
     // Created before `config` to ensure that emu data directory
     // isn't created before the check is performed
@@ -465,6 +479,7 @@ protected:
     void mouseMoveEvent(QMouseEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
+    void showEvent(QShowEvent* event) override;
 };
 
 class GApplicationEventFilter : public QObject {

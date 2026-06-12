@@ -13,16 +13,31 @@ cmake_policy(SET CMP0063 NEW)
 cmake_policy(SET CMP0127 NEW)
 set(CMAKE_POLICY_DEFAULT_CMP0063 NEW)
 
+# Prefer building bundled dependencies as static instead of shared
+set(BUILD_SHARED_LIBS OFF)
+
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/CMakeModules")
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/externals/cmake-modules")
 include(DownloadExternals)
 include(CMakeDependentOption)
-include(FindPkgConfig)
 
 project(citra LANGUAGES C CXX ASM)
+# must be invoked after project() command when using CMAKE_TOOLCHAIN_FILE
+include(FindPkgConfig)
 if (CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR CMAKE_SYSTEM_NAME STREQUAL "iOS")
     enable_language(OBJC OBJCXX)
 endif()
+
+if (CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux" AND MINGW)
+    string(TOLOWER ${LIBTYPE} LIBTYPE_LOWER)
+    set(CMAKE_AR x86_64-w64-mingw32.${LIBTYPE_LOWER}-gcc-ar)
+endif()
+
+if (BSD STREQUAL "OpenBSD")
+    add_link_options(-z wxneeded)
+endif()
+
+option(ENABLE_LIBRETRO "Build as a LibRetro core" OFF)
 
 # Some submodules like to pick their own default build type if not specified.
 # Make sure we default to Release build type always, unless the generator has custom types.
@@ -30,7 +45,7 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Choose the type of build." FORCE)
 endif()
 
-if (APPLE)
+if (APPLE AND NOT ENABLE_LIBRETRO)
     # Silence warnings on empty objects, for example when platform-specific code is #ifdef'd out.
     set(CMAKE_C_ARCHIVE_CREATE "<CMAKE_AR> Scr <TARGET> <LINK_FLAGS> <OBJECTS>")
     set(CMAKE_CXX_ARCHIVE_CREATE "<CMAKE_AR> Scr <TARGET> <LINK_FLAGS> <OBJECTS>")
@@ -90,8 +105,18 @@ else()
     set(DEFAULT_ENABLE_OPENGL ON)
 endif()
 
+# Track which options were explicitly set by the user (for libretro conflict detection)
+set(_LIBRETRO_INCOMPATIBLE_OPTIONS
+    ENABLE_SDL2 ENABLE_QT ENABLE_WEB_SERVICE ENABLE_SCRIPTING ENABLE_GDBSTUB
+    ENABLE_OPENAL ENABLE_ROOM ENABLE_ROOM_STANDALONE ENABLE_CUBEB ENABLE_LIBUSB)
+set(_USER_SET_OPTIONS "")
+foreach(_opt IN LISTS _LIBRETRO_INCOMPATIBLE_OPTIONS)
+    if(DEFINED ${_opt})
+        list(APPEND _USER_SET_OPTIONS ${_opt})
+    endif()
+endforeach()
+
 option(ENABLE_SDL2 "Enable using SDL2" ON)
-CMAKE_DEPENDENT_OPTION(ENABLE_SDL2_FRONTEND "Enable the SDL2 frontend" OFF "ENABLE_SDL2;NOT ANDROID AND NOT IOS" OFF)
 option(USE_SYSTEM_SDL2 "Use the system SDL2 lib (instead of the bundled one)" OFF)
 
 # Set bundled qt as dependent options.
@@ -105,6 +130,7 @@ CMAKE_DEPENDENT_OPTION(ENABLE_ROOM_STANDALONE "Enable generating a standalone de
 
 option(ENABLE_WEB_SERVICE "Enable web services (telemetry, etc.)" ON)
 option(ENABLE_SCRIPTING "Enable RPC server for scripting" ON)
+option(ENABLE_GDBSTUB "Enable GDB stub for emulated applications" ON)
 
 CMAKE_DEPENDENT_OPTION(ENABLE_CUBEB "Enables the cubeb audio backend" ON "NOT IOS" OFF)
 option(ENABLE_OPENAL "Enables the OpenAL audio backend" ON)
@@ -113,7 +139,8 @@ CMAKE_DEPENDENT_OPTION(ENABLE_LIBUSB "Enable libusb for GameCube Adapter support
 
 CMAKE_DEPENDENT_OPTION(ENABLE_SOFTWARE_RENDERER "Enables the software renderer" ON "NOT ANDROID" OFF)
 CMAKE_DEPENDENT_OPTION(ENABLE_OPENGL "Enables the OpenGL renderer" ${DEFAULT_ENABLE_OPENGL} "NOT APPLE" OFF)
-option(ENABLE_VULKAN "Enables the Vulkan renderer" ON)
+# NetBSD doesn't support Vulkan yet, remove this check when it does.
+CMAKE_DEPENDENT_OPTION(ENABLE_VULKAN "Enables the Vulkan renderer" ON "NOT (BSD MATCHES \"NetBSD\")" OFF)
 
 option(USE_DISCORD_PRESENCE "Enables Discord Rich Presence" OFF)
 
@@ -123,12 +150,39 @@ option(ENABLE_SSE42 "Enable SSE4.2 optimizations on x86_64" OFF)
 
 option(ENABLE_DEVELOPER_OPTIONS "Enable functionality targeted at emulator developers" OFF)
 
+option(ENABLE_BUILTIN_KEYBLOB "Enable the inclusion of the default crypto keys blob" ON)
+
 # Compile options
 CMAKE_DEPENDENT_OPTION(COMPILE_WITH_DWARF "Add DWARF debugging information" ${IS_DEBUG_BUILD} "MINGW" OFF)
 option(ENABLE_LTO "Enable link time optimization" ${DEFAULT_ENABLE_LTO})
 option(ENABLE_NATIVE_OPTIMIZATION "Enables processor-specific optimizations via -march=native" OFF)
 option(CITRA_USE_PRECOMPILED_HEADERS "Use precompiled headers" ON)
 option(CITRA_WARNINGS_AS_ERRORS "Enable warnings as errors" ON)
+
+# Handle incompatible options for libretro builds
+if(ENABLE_LIBRETRO)
+    # Check for explicitly-set conflicting options
+    set(_CONFLICTS "")
+    foreach(_opt IN LISTS _LIBRETRO_INCOMPATIBLE_OPTIONS)
+        list(FIND _USER_SET_OPTIONS ${_opt} _idx)
+        if(NOT _idx EQUAL -1 AND ${_opt})
+            list(APPEND _CONFLICTS ${_opt})
+        endif()
+    endforeach()
+
+    if(_CONFLICTS)
+        string(REPLACE ";" ", " _CONFLICTS_STR "${_CONFLICTS}")
+        message(FATAL_ERROR
+            "ENABLE_LIBRETRO is incompatible with: ${_CONFLICTS_STR}\n"
+            "These options were explicitly enabled but are not supported for libretro builds.\n"
+            "Remove these options or set them to OFF.")
+    endif()
+
+    # Force disable incompatible options (handles defaulted-on options)
+    foreach(_opt IN LISTS _LIBRETRO_INCOMPATIBLE_OPTIONS)
+        set(${_opt} OFF CACHE BOOL "Disabled for libretro" FORCE)
+    endforeach()
+endif()
 
 # Pass the following values to C++ land
 if (ENABLE_QT)
@@ -142,9 +196,6 @@ if (ENABLE_ROOM)
 endif()
 if (ENABLE_SDL2)
     add_definitions(-DENABLE_SDL2)
-endif()
-if (ENABLE_SDL2_FRONTEND)
-    add_definitions(-DENABLE_SDL2_FRONTEND)
 endif()
 
 if(ENABLE_SSE42 AND (CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64"))
@@ -223,7 +274,7 @@ function(check_submodules_present)
     foreach(module ${gitmodules})
         string(REGEX REPLACE "path *= *" "" module ${module})
         if (NOT EXISTS "${PROJECT_SOURCE_DIR}/${module}/.git")
-            message(SEND_ERROR "Git submodule ${module} not found."
+            message(SEND_ERROR "Git submodule ${module} not found.\n"
                     "Please run: git submodule update --init --recursive")
         endif()
     endforeach()
@@ -300,6 +351,9 @@ set(CMAKE_VISIBILITY_INLINES_HIDDEN NO)
 # set up output paths for executable binaries
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/bin/$<CONFIG>)
 
+if (ENABLE_LIBRETRO)
+  set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif()
 
 # System imported libraries
 # ======================
@@ -357,13 +411,21 @@ if (APPLE)
     endif()
     find_library(AVFOUNDATION_LIBRARY AVFoundation REQUIRED)
     find_library(IOSURFACE_LIBRARY IOSurface REQUIRED)
-    set(PLATFORM_LIBRARIES ${COCOA_LIBRARY} ${AVFOUNDATION_LIBRARY} ${IOSURFACE_LIBRARY} ${MOLTENVK_LIBRARY})
+    set(PLATFORM_LIBRARIES ${COCOA_LIBRARY} ${AVFOUNDATION_LIBRARY} ${IOSURFACE_LIBRARY})
 
-    if (ENABLE_VULKAN)
-        if (NOT USE_SYSTEM_MOLTENVK)
+    if (ENABLE_VULKAN AND NOT ENABLE_LIBRETRO)
+        if (USE_SYSTEM_MOLTENVK)
+            find_library(MOLTENVK_LIBRARY MoltenVK REQUIRED)
+        else()
             download_moltenvk()
+            if (IOS)
+                set(MOLTENVK_RELATIVE_LIBPATH "static/MoltenVK.xcframework/ios-arm64/libMoltenVK.a")
+            else()
+                set(MOLTENVK_RELATIVE_LIBPATH "dynamic/dylib/macOS/libMoltenVK.dylib")
+            endif()
+            set(MOLTENVK_LIBRARY "${CMAKE_BINARY_DIR}/externals/MoltenVK/MoltenVK/${MOLTENVK_RELATIVE_LIBPATH}")
         endif()
-        find_library(MOLTENVK_LIBRARY MoltenVK REQUIRED)
+
         message(STATUS "Using MoltenVK at ${MOLTENVK_LIBRARY}.")
         set(PLATFORM_LIBRARIES ${PLATFORM_LIBRARIES} ${MOLTENVK_LIBRARY})
     endif()
@@ -513,8 +575,6 @@ if (NOT ANDROID AND NOT IOS)
     include(BundleTarget)
     if (ENABLE_QT)
         qt_bundle_target(citra_meta)
-    elseif (ENABLE_SDL2_FRONTEND)
-        bundle_target(citra_meta)
     endif()
     if (ENABLE_ROOM_STANDALONE)
         bundle_target(citra_room_standalone)

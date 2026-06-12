@@ -1,5 +1,3 @@
-//FILE MODIFIED BY AzaharPlus APRIL 2025
-
 // Copyright Citra Emulator Project / Azahar Emulator Project
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
@@ -81,7 +79,6 @@ HackManager hack_manager = {
                  },
          }},
 
-#ifdef todotodo
         {HackType::ONLINE_LLE_REQUIRED,
          HackEntry{
              .mode = HackAllowMode::FORCE,
@@ -101,7 +98,7 @@ HackManager hack_manager = {
                      0x0004001000026000, // CHN
                      0x0004001000027000, // KOR
                      0x0004001000028000, // TWN
-/*
+
                      // Nintendo Network ID Settings
                      0x000400100002BF00, // JPN
                      0x000400100002C000, // USA
@@ -117,11 +114,9 @@ HackManager hack_manager = {
 
                      // Pretendo Network's Nimbus
                      0x000400000D40D200,
-*/
                  },
          }},
-//
-//#ifdef todotodo
+
         {HackType::REGION_FROM_SECURE,
          HackEntry{
              .mode = HackAllowMode::FORCE,
@@ -169,8 +164,6 @@ HackManager hack_manager = {
                      0x0004013020003203, // New 3DS safe mode
                  },
          }},
-//
-#endif
         {HackType::REQUIRES_SHADER_FIXUP,
          HackEntry{
              .mode = HackAllowMode::FORCE,
@@ -194,6 +187,29 @@ HackManager hack_manager = {
                      0x00040000001AA300, // 3 (JPN)
                  },
          }},
-
+        {HackType::SPOOF_FRIEND_CODE_SEED,
+         HackEntry{
+             .mode = HackAllowMode::FORCE,
+             .affected_title_ids =
+                 {
+                     // Luigi's Mansion 3ds
+                     0x00040000001D1800, // JPN
+                     0x00040000001D1900, // USA
+                     0x00040000001D1A00, // EUR
+                 },
+         }},
+        {HackType::DELAY_TEXTURE_COPY_COMPLETION,
+         HackEntry{
+             .mode = HackAllowMode::FORCE,
+             .affected_title_ids =
+                 {
+                     // Super Mario 3D Land
+                     0x0004000000054100, // JPN
+                     0x0004000000054000, // USA
+                     0x0004000000053F00, // EUR
+                     0x0004000000089E00, // CHN
+                     0x0004000000089D00, // KOR
+                 },
+         }},
     }};
 }

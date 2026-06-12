@@ -211,14 +211,14 @@ void RasterizerOpenGL::SwitchDiskResources(u64 title_id) {
             render_window, driver, title_id, !driver.IsOpenGLES()));
 
         if (switch_disk_resources_callback) {
-            switch_disk_resources_callback(VideoCore::LoadCallbackStage::Prepare, 0, 0);
+            switch_disk_resources_callback(VideoCore::LoadCallbackStage::Prepare, 0, 0, "");
         }
 
         std::atomic_bool stop_loading;
         new_manager->LoadDiskCache(stop_loading, switch_disk_resources_callback, accurate_mul);
 
         if (switch_disk_resources_callback) {
-            switch_disk_resources_callback(VideoCore::LoadCallbackStage::Complete, 0, 0);
+            switch_disk_resources_callback(VideoCore::LoadCallbackStage::Complete, 0, 0, "");
         }
     }
 
@@ -666,8 +666,21 @@ void RasterizerOpenGL::SyncTextureUnits(const Framebuffer* framebuffer) {
 
         // If the texture unit is disabled unbind the corresponding gl unit
         if (!texture.enabled) {
-            const Surface& null_surface = res_cache.GetSurface(VideoCore::NULL_SURFACE_ID);
-            state.texture_units[texture_index].texture_2d = null_surface.Handle();
+            switch (texture.config.type.Value()) {
+            case TextureType::TextureCube:
+            case TextureType::ShadowCube: {
+                state.texture_units[texture_index].texture_2d =
+                    res_cache.GetSurface(VideoCore::NULL_SURFACE_CUBE_ID).Handle();
+                state.texture_units[texture_index].target = GL_TEXTURE_CUBE_MAP;
+                break;
+            }
+            default: {
+                state.texture_units[texture_index].texture_2d =
+                    res_cache.GetSurface(VideoCore::NULL_SURFACE_ID).Handle();
+                state.texture_units[texture_index].target = GL_TEXTURE_2D;
+                break;
+            }
+            }
             continue;
         }
 
@@ -676,7 +689,7 @@ void RasterizerOpenGL::SyncTextureUnits(const Framebuffer* framebuffer) {
             switch (texture.config.type.Value()) {
             case TextureType::Shadow2D: {
                 Surface& surface = res_cache.GetTextureSurface(texture);
-                surface.flags |= VideoCore::SurfaceFlagBits::ShadowMap;
+                surface.flags |= VideoCore::SurfaceFlagBits::ShadowSource;
                 state.image_shadow_texture_px = surface.Handle();
                 continue;
             }
@@ -724,7 +737,7 @@ void RasterizerOpenGL::BindShadowCube(const Pica::TexturingRegs::FullTextureConf
 
         VideoCore::SurfaceId surface_id = res_cache.GetTextureSurface(info);
         Surface& surface = res_cache.GetSurface(surface_id);
-        surface.flags |= VideoCore::SurfaceFlagBits::ShadowMap;
+        surface.flags |= VideoCore::SurfaceFlagBits::ShadowSource;
         state.image_shadow_texture[binding] = surface.Handle();
     }
 }

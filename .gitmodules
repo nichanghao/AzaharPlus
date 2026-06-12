@@ -55,18 +55,12 @@
 [submodule "sdl2"]
 	path = externals/sdl2/SDL
 	url = https://github.com/libsdl-org/SDL
-[submodule "cryptopp-cmake"]
-	path = externals/cryptopp-cmake
-	url = https://github.com/abdes/cryptopp-cmake.git
-[submodule "cryptopp"]
-	path = externals/cryptopp
-	url = https://github.com/weidai11/cryptopp.git
 [submodule "dds-ktx"]
 	path = externals/dds-ktx
 	url = https://github.com/septag/dds-ktx
 [submodule "openal-soft"]
 	path = externals/openal-soft
-	url = https://github.com/kcat/openal-soft
+	url = https://github.com/azahar-emu/openal-soft
 [submodule "glslang"]
 	path = externals/glslang
 	url = https://github.com/KhronosGroup/glslang
@@ -93,7 +87,7 @@
 	url = https://github.com/merryhime/oaknut.git
 [submodule "compatibility-list"]
 	path = dist/compatibility_list
-	url = https://github.com/azahar-emu/compatibility-list
+	url = https://github.com/AzaharPlus/compatibility-list
 [submodule "spirv-tools"]
 	path = externals/spirv-tools
 	url = https://github.com/KhronosGroup/SPIRV-Tools
@@ -103,3 +97,18 @@
 [submodule "externals/xxHash"]
 	path = externals/xxHash
 	url = https://github.com/Cyan4973/xxHash.git
+[submodule "externals/libretro-common"]
+	path = externals/libretro-common/libretro-common
+	url = https://github.com/libretro/libretro-common.git
+[submodule "dllwalker"]
+	path = externals/dllwalker
+	url = https://github.com/azahar-emu/dllwalker
+[submodule "externals/cryptopp"]
+	path = externals/cryptopp
+	url = https://github.com/cryptopp-modern/cryptopp-modern.git
+[submodule "externals/libzip"]
+	path = externals/libzip
+	url = https://github.com/nih-at/libzip.git
+[submodule "externals/Anylinux-AppImages"]
+	path = externals/Anylinux-AppImages
+	url = https://github.com/pkgforge-dev/Anylinux-AppImages.git

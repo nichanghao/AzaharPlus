@@ -602,17 +602,13 @@ public:
         std::shared_ptr<Module> cecd;
     };
 
-private:
-    /// String used by cecd for base64 encoding found in the sysmodule disassembly
-    const std::string base64_dict =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+-";
+    /// Encoding function used for the message id
+    static std::string EncodeBase64(std::span<const u8> in);
 
+private:
     const std::vector<u8> cecd_system_savedata_id = {0x00, 0x00, 0x00, 0x00,
                                                      0x26, 0x00, 0x01, 0x00};
-
-    /// Encoding function used for the message id
-    std::string EncodeBase64(std::span<const u8> in) const;
-
+													 
     std::string GetCecDataPathTypeAsString(
         const CecDataPathType type, const u32 program_id,
         std::span<const u8> msg_id = std::span<const u8>{}) const;

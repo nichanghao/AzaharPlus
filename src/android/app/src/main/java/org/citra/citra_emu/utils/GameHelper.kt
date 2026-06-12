@@ -21,6 +21,8 @@ object GameHelper {
     const val KEY_GAME_PATH = "game_path"
     const val KEY_GAMES = "Games"
 
+    // Since the game val in GetGame is tied to the JNI we need to cache the game list in order to use it elsewhere
+    var cachedGameList = mutableListOf<Game>()
     private lateinit var preferences: SharedPreferences
 
     fun getGames(): List<Game> {
@@ -32,7 +34,7 @@ object GameHelper {
 
         addGamesRecursive(games, FileUtil.listFiles(gamesUri), 3)
         NativeLibrary.getInstalledGamePaths().forEach {
-            games.add(getGame(Uri.parse(it), isInstalled = true, addedToLibrary = true))
+            games.add(getGame(Uri.parse(it.path), isInstalled = true, addedToLibrary = true, it.mediaType))
         }
 
         // Cache list of games found on disk
@@ -45,6 +47,7 @@ object GameHelper {
             .putStringSet(KEY_GAMES, serializedGames)
             .apply()
 
+        cachedGameList = games.toMutableList()
         return games.toList()
     }
 
@@ -62,27 +65,46 @@ object GameHelper {
                 addGamesRecursive(games, FileUtil.listFiles(it.uri), depth - 1)
             } else {
                 if (Game.allExtensions.contains(FileUtil.getExtension(it.uri))) {
-                    games.add(getGame(it.uri, isInstalled = false, addedToLibrary = true))
+                    games.add(getGame(it.uri, isInstalled = false, addedToLibrary = true, Game.MediaType.GAME_CARD))
                 }
             }
         }
     }
 
-    fun getGame(uri: Uri, isInstalled: Boolean, addedToLibrary: Boolean): Game {
+    fun getGame(uri: Uri, isInstalled: Boolean, addedToLibrary: Boolean, mediaType: Game.MediaType): Game {
         val filePath = uri.toString()
-        var gameInfo: GameInfo? = GameInfo(filePath)
+        var nativePath: String? = null
+        var gameInfo: GameInfo?
+        if (BuildUtil.isGooglePlayBuild || FileUtil.isNativePath(filePath) || filePath.startsWith("!")) {
+            gameInfo = GameInfo(filePath)
+        } else {
+            nativePath = if (uri.scheme == "fd") {
+                uri.toString()
+            } else {
+                "!" + NativeLibrary.getNativePath(uri)
+            };
+            gameInfo = GameInfo(nativePath)
+        }
 
-        if (gameInfo?.isValid() == false) {
+        val valid = gameInfo.isValid()
+        if (!valid) {
             gameInfo = null
         }
 
         val isEncrypted = gameInfo?.isEncrypted() == true
 
         val newGame = Game(
+            valid,
             (gameInfo?.getTitle() ?: FileUtil.getFilename(uri)).replace("[\\t\\n\\r]+".toRegex(), " "),
             filePath.replace("\n", " "),
-            filePath,
+            // TODO: This next line can be deduplicated but I don't want to right now -OS
+            if (BuildUtil.isGooglePlayBuild || FileUtil.isNativePath(filePath) || filePath.startsWith("!")) {
+                filePath
+            } else {
+                nativePath!!
+            },
             gameInfo?.getTitleID() ?: 0,
+            mediaType,
             gameInfo?.getCompany() ?: "",
             if (isEncrypted) { CitraApplication.appContext.getString(R.string.unsupported_encrypted) } else { gameInfo?.getRegions() ?: "" },
             isInstalled,

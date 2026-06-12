@@ -1,5 +1,3 @@
-//FILE MODIFIED BY AzaharPlus APRIL 2025
-
 // Copyright Citra Emulator Project / Azahar Emulator Project
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
@@ -165,7 +163,7 @@ void ConfigureGeneral::ResetDefaults() {
 
     FileUtil::Delete(FileUtil::GetUserPath(FileUtil::UserPath::ConfigDir) + "qt-config.ini");
     FileUtil::DeleteDirRecursively(FileUtil::GetUserPath(FileUtil::UserPath::ConfigDir) + "custom");
-    std::exit(0);
+    qApp->quit();
 }
 
 void ConfigureGeneral::ApplyConfiguration() {

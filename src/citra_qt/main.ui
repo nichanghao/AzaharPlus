@@ -53,6 +53,18 @@
     <property name="title">
      <string>File</string>
     </property>
+    <widget class="QMenu" name="menu_Download_System_Files">
+     <property name="title">
+      <string>Download System Files</string>
+     </property>
+     <addaction name="action_Download_System_Files_JPN"/>
+     <addaction name="action_Download_System_Files_USA"/>
+     <addaction name="action_Download_System_Files_EUR"/>
+     <addaction name="action_Download_System_Files_AUS"/>
+     <addaction name="action_Download_System_Files_CHN"/>
+     <addaction name="action_Download_System_Files_KOR"/>
+     <addaction name="action_Download_System_Files_TWN"/>
+    </widget>
     <widget class="QMenu" name="menu_Boot_Home_Menu">
      <property name="title">
       <string>Boot Home Menu</string>
@@ -70,11 +82,61 @@
       <string>Recent Files</string>
      </property>
     </widget>
+    <widget class="QMenu" name="menu_ZipPass">
+     <property name="title">
+      <string>ZipPass</string>
+     </property>
+     <addaction name="action_Export_ZipPass"/>
+     <addaction name="action_Import_ZipPass"/>
+     <addaction name="action_Clear_StreetPass_Config"/>
+    </widget>
     <widget class="QMenu" name="menu_Amiibo">
      <property name="title">
       <string>Amiibo</string>
      </property>
+     <widget class="QMenu" name="menu_Amiibo_Full_List">
+      <property name="title">
+       <string>Full List</string>
+      </property>
+      <property name="enabled">
+       <bool>false</bool>
+      </property>
+     </widget>
+     <widget class="QMenu" name="menu_Amiibo_Recommended">
+      <property name="title">
+       <string>Recommended</string>
+      </property>
+      <property name="enabled">
+       <bool>false</bool>
+      </property>
+     </widget>
+     <widget class="QMenu" name="menu_Amiibo_File_Full_List">
+      <property name="title">
+       <string>Full List</string>
+      </property>
+     </widget>
+     <widget class="QMenu" name="menu_Amiibo_File_Recommended">
+      <property name="title">
+       <string>Recommended</string>
+      </property>
+      <property name="enabled">
+       <bool>false</bool>
+      </property>
+     </widget>
+     <widget class="QMenu" name="menu_Amiibo_Generate_File">
+      <property name="title">
+       <string>Generate File</string>
+      </property>
+      <addaction name="menu_Amiibo_File_Recommended"/>
+      <addaction name="menu_Amiibo_File_Full_List"/>
+     </widget>
+     <addaction name="menu_Amiibo_Generate_File"/>
      <addaction name="action_Load_Amiibo"/>
+     <addaction name="separator"/>
+     <addaction name="action_Previous_Amiibo"/>
+     <addaction name="menu_Amiibo_Recommended"/>
+     <addaction name="menu_Amiibo_Full_List"/>
+     <addaction name="separator"/>
      <addaction name="action_Remove_Amiibo"/>
     </widget>
     <addaction name="action_Load_File"/>
@@ -84,10 +146,13 @@
     <addaction name="action_Remove_Azahar_Encryption"/>
     <addaction name="action_Revert_Encryption_Removal"/>
     <addaction name="separator"/>
+    <addaction name="menu_Download_System_Files"/>
+    <addaction name="action_Setup_System_Files"/>
     <addaction name="menu_Boot_Home_Menu"/>
     <addaction name="separator"/>
     <addaction name="menu_recent_files"/>
     <addaction name="separator"/>
+    <addaction name="menu_ZipPass"/>
     <addaction name="menu_Amiibo"/>
     <addaction name="separator"/>
     <addaction name="action_Open_Citra_Folder"/>
@@ -209,6 +274,19 @@
     <addaction name="action_Advance_Frame"/>
     <addaction name="menu_Movie"/>
     <addaction name="separator"/>
+    <widget class="QMenu" name="menu_Debug">
+     <property name="title">
+      <string>Debug</string>
+     </property>
+     <addaction name="action_Debug_Pause"/>
+     <addaction name="action_Debug_Resume"/>
+     <addaction name="action_Debug_Step"/>
+     <addaction name="separator"/>
+     <addaction name="action_Debug_Unschedule_All"/>
+     <addaction name="action_Debug_Schedule_All"/>
+    </widget>
+     <addaction name="menu_Debug"/>
+    <addaction name="separator"/>
     <addaction name="action_Capture_Screenshot"/>
     <addaction name="action_Dump_Video"/>
     <addaction name="separator"/>
@@ -224,6 +302,7 @@
     <addaction name="separator"/>
     <addaction name="action_Open_Log_Folder"/>
     <addaction name="action_FAQ"/>
+    <addaction name="action_libzip"/>
     <addaction name="action_About"/>
    </widget>
    <addaction name="menu_File"/>
@@ -256,6 +335,46 @@
   <action name="action_Revert_Encryption_Removal">
     <property name="text">
       <string>Revert Encryption Removal</string>
+    </property>
+  </action>
+  <action name="action_Download_System_Files_JPN">
+   <property name="text">
+    <string>JPN</string>
+   </property>
+  </action>
+  <action name="action_Download_System_Files_USA">
+   <property name="text">
+    <string>USA</string>
+   </property>
+  </action>
+  <action name="action_Download_System_Files_EUR">
+   <property name="text">
+    <string>EUR</string>
+   </property>
+  </action>
+  <action name="action_Download_System_Files_AUS">
+   <property name="text">
+    <string>AUS</string>
+   </property>
+  </action>
+  <action name="action_Download_System_Files_CHN">
+   <property name="text">
+    <string>CHN</string>
+   </property>
+  </action>
+  <action name="action_Download_System_Files_KOR">
+   <property name="text">
+    <string>KOR</string>
+   </property>
+  </action>
+  <action name="action_Download_System_Files_TWN">
+   <property name="text">
+    <string>TWN</string>
+   </property>
+  </action>
+  <action name="action_Setup_System_Files">
+    <property name="text">
+      <string>Set Up System Files...</string>
     </property>
   </action>
   <action name="action_Boot_Home_Menu_JPN">
@@ -333,6 +452,11 @@
   <action name="action_FAQ">
    <property name="text">
     <string>FAQ</string>
+   </property>
+  </action>
+  <action name="action_libzip">
+   <property name="text">
+    <string>libzip licence</string>
    </property>
   </action>
   <action name="action_About">
@@ -461,6 +585,46 @@
     <string>Capture Screenshot</string>
    </property>
   </action>
+  <action name="action_Debug_Pause">
+   <property name="enabled">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>Debug Pause</string>
+   </property>
+  </action>
+  <action name="action_Debug_Resume">
+   <property name="enabled">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>Debug Resume</string>
+   </property>
+  </action>
+  <action name="action_Debug_Step">
+   <property name="enabled">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>Debug Step</string>
+   </property>
+  </action>
+   <action name="action_Debug_Unschedule_All">
+     <property name="enabled">
+       <bool>true</bool>
+     </property>
+     <property name="text">
+       <string>Debug Unschedule All</string>
+     </property>
+   </action>
+   <action name="action_Debug_Schedule_All">
+     <property name="enabled">
+       <bool>true</bool>
+     </property>
+     <property name="text">
+       <string>Debug Schedule All</string>
+     </property>
+   </action>
   <action name="action_Dump_Video">
    <property name="checkable">
     <bool>true</bool>
@@ -679,6 +843,29 @@
    </property>
    <property name="text">
     <string>Restart</string>
+   </property>
+  </action>
+  <action name="action_Export_ZipPass">
+   <property name="text">
+    <string>Export ZipPass Data</string>
+   </property>
+  </action>
+  <action name="action_Import_ZipPass">
+   <property name="text">
+    <string>Import ZipPass Data</string>
+   </property>
+  </action>
+  <action name="action_Clear_StreetPass_Config">
+   <property name="text">
+    <string>Clear StreetPass Configuration</string>
+   </property>
+  </action>
+  <action name="action_Previous_Amiibo">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>Previous Amiibo</string>
    </property>
   </action>
   <action name="action_Load_Amiibo">

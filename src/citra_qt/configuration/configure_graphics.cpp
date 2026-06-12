@@ -21,9 +21,10 @@ ConfigureGraphics::ConfigureGraphics(QString gl_renderer, std::span<const QStrin
 
     ui->graphics_api_combo->setEnabled(!is_powered_on);
     ui->physical_device_combo->setEnabled(!is_powered_on);
+    ui->toggle_accurate_mul->setEnabled(!is_powered_on);
     ui->toggle_async_shaders->setEnabled(!is_powered_on);
     ui->toggle_async_present->setEnabled(!is_powered_on);
-    ui->toggle_accurate_mul->setEnabled(!is_powered_on);
+    ui->toggle_display_refresh_rate_detection->setEnabled(!is_powered_on);
     // Set the index to -1 to ensure the below lambda is called with setCurrentIndex
     ui->graphics_api_combo->setCurrentIndex(-1);
 
@@ -150,7 +151,10 @@ void ConfigureGraphics::SetConfiguration() {
 
     if (Settings::IsConfiguringGlobal()) {
         ui->toggle_shader_jit->setChecked(Settings::values.use_shader_jit.GetValue());
+        ui->toggle_display_refresh_rate_detection->setChecked(
+            Settings::values.use_display_refresh_rate_detection.GetValue());
     }
+    ui->simulate_3ds_gpu_timings->setChecked(Settings::values.simulate_3ds_gpu_timings.GetValue());
 }
 
 void ConfigureGraphics::ApplyConfiguration() {
@@ -179,9 +183,14 @@ void ConfigureGraphics::ApplyConfiguration() {
     ConfigurationShared::ApplyPerGameSetting(
         &Settings::values.delay_game_render_thread_us, ui->delay_render_combo,
         [this](s32) { return ui->delay_render_slider->value(); });
+    ConfigurationShared::ApplyPerGameSetting(&Settings::values.simulate_3ds_gpu_timings,
+                                             ui->simulate_3ds_gpu_timings,
+                                             simulate_3ds_gpu_timings);
 
     if (Settings::IsConfiguringGlobal()) {
         Settings::values.use_shader_jit = ui->toggle_shader_jit->isChecked();
+        Settings::values.use_display_refresh_rate_detection =
+            ui->toggle_display_refresh_rate_detection->isChecked();
     }
 }
 
@@ -207,6 +216,8 @@ void ConfigureGraphics::SetupPerGameUI() {
         ui->physical_device_combo->setEnabled(Settings::values.physical_device.UsingGlobal());
         ui->delay_render_combo->setEnabled(
             Settings::values.delay_game_render_thread_us.UsingGlobal());
+        ui->simulate_3ds_gpu_timings->setEnabled(
+            Settings::values.simulate_3ds_gpu_timings.UsingGlobal());
         return;
     }
 
@@ -216,6 +227,7 @@ void ConfigureGraphics::SetupPerGameUI() {
     });
 
     ui->toggle_shader_jit->setVisible(false);
+    ui->toggle_display_refresh_rate_detection->setVisible(false);
 
     ConfigurationShared::SetColoredComboBox(
         ui->graphics_api_combo, ui->graphics_api_group,
@@ -248,6 +260,9 @@ void ConfigureGraphics::SetupPerGameUI() {
     ConfigurationShared::SetColoredTristate(ui->disable_spirv_optimizer,
                                             Settings::values.disable_spirv_optimizer,
                                             disable_spirv_optimizer);
+    ConfigurationShared::SetColoredTristate(ui->simulate_3ds_gpu_timings,
+                                            Settings::values.simulate_3ds_gpu_timings,
+                                            simulate_3ds_gpu_timings);
 }
 
 void ConfigureGraphics::SetPhysicalDeviceComboVisibility(int index) {

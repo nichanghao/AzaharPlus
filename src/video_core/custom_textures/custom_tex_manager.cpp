@@ -1,4 +1,4 @@
-// Copyright 2023 Citra Emulator Project
+// Copyright Citra Emulator Project / Azahar Emulator Project
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
@@ -228,7 +228,8 @@ void CustomTexManager::PreloadTextures(const std::atomic_bool& stop_run,
             material->LoadFromDisk(flip_png_files);
             size_sum += material->size;
             if (callback) {
-                callback(VideoCore::LoadCallbackStage::Preload, preloaded, custom_textures.size());
+                callback(VideoCore::LoadCallbackStage::Preload, preloaded, custom_textures.size(),
+                         "");
             }
             preloaded++;
         }
@@ -289,7 +290,7 @@ void CustomTexManager::DumpTexture(const SurfaceParams& params, u32 level, std::
 Material* CustomTexManager::GetMaterial(u64 data_hash) {
     const auto it = material_map.find(data_hash);
     if (it == material_map.end()) {
-        LOG_WARNING(Render, "Unable to find replacement for surface with hash {:016X}", data_hash);
+//        LOG_WARNING(Render, "Unable to find replacement for surface with hash {:016X}", data_hash);
         return nullptr;
     }
     return it->second.get();

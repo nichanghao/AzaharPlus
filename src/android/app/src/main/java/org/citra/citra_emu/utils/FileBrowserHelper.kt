@@ -34,6 +34,11 @@ object FileBrowserHelper {
                     val fileExtension = filename?.substring(extensionStart + 1)
                     if (extension.contains(fileExtension)) {
                         filePaths.add(file?.uri.toString())
+                    } else for(ext in extension){
+                        if(filename?.endsWith(ext.toString()) ?: false){
+                            filePaths.add(file.uri.toString())
+                            break
+                        }
                     }
                 }
             }

@@ -8,8 +8,10 @@
 #include <string>
 #include "common/logging/log.h"
 #include "common/string_util.h"
+#include "common/zstd_compression.h"
 #include "core/core.h"
 #include "core/hle/kernel/process.h"
+#include "core/hle/service/am/am.h"
 #include "core/loader/3dsx.h"
 #include "core/loader/artic.h"
 #include "core/loader/elf.h"
@@ -50,7 +52,7 @@ FileType GuessFromExtension(const std::string& extension_) {
     if (extension == ".elf" || extension == ".axf")
         return FileType::ELF;
 
-    if (extension == ".cci" || extension == ".3ds" || extension == ".zcci" || extension == ".z3ds")
+    if (extension == ".cci" || extension == ".zcci" || extension == ".3ds" || extension == ".z3ds")
         return FileType::CCI;
 
     if (extension == ".cxi" || extension == ".app" || extension == ".zcxi")
@@ -114,14 +116,12 @@ static std::unique_ptr<AppLoader> GetFileLoader(Core::System& system, FileUtil::
         return std::make_unique<AppLoader_NCCH>(system, std::move(file), filepath);
 
     case FileType::ARTIC: {
-#ifdef todotodo
         Apploader_Artic::ArticInitMode mode = Apploader_Artic::ArticInitMode::NONE;
         if (filename.starts_with("articinio://")) {
             mode = Apploader_Artic::ArticInitMode::O3DS;
         } else if (filename.starts_with("articinin://")) {
             mode = Apploader_Artic::ArticInitMode::N3DS;
         }
-#endif
         auto strToUInt = [](const std::string& str) -> int {
             char* pEnd = NULL;
             unsigned long ul = ::strtoul(str.c_str(), &pEnd, 10);
@@ -140,11 +140,7 @@ static std::unique_ptr<AppLoader> GetFileLoader(Core::System& system, FileUtil::
                 server_addr = server_addr.substr(0, pos);
             }
         }
-#ifdef todotodo
         return std::make_unique<Apploader_Artic>(system, server_addr, port, mode);
-#else
-        return std::make_unique<Apploader_Artic>(system, server_addr, port);
-#endif
     }
 
     default:
@@ -185,6 +181,64 @@ std::unique_ptr<AppLoader> GetLoader(const std::string& filename) {
 
     auto& system = Core::System::GetInstance();
     return GetFileLoader(system, std::move(file), type, filename_filename, filename);
+}
+
+std::optional<std::pair<Loader::AppLoader::CompressFileInfo, size_t>> GetCompressFileInfo(
+    const std::string& filepath, bool compress) {
+    Loader::AppLoader::CompressFileInfo compress_info{};
+    compress_info.is_supported = false;
+    size_t frame_size{};
+    auto loader = Loader::GetLoader(filepath);
+    if (loader) {
+        compress_info = loader->GetCompressFileInfo();
+        frame_size = FileUtil::Z3DSWriteIOFile::DEFAULT_FRAME_SIZE;
+    } else {
+        bool is_compressed = false;
+        if (Service::AM::CheckCIAToInstall(filepath, is_compressed, compress ? true : false) ==
+            Service::AM::InstallStatus::Success) {
+            compress_info.is_supported = true;
+            compress_info.is_compressed = is_compressed;
+            compress_info.recommended_compressed_extension = "zcia";
+            compress_info.recommended_uncompressed_extension = "cia";
+            compress_info.underlying_magic = std::array<u8, 4>({'C', 'I', 'A', '\0'});
+            frame_size = FileUtil::Z3DSWriteIOFile::DEFAULT_CIA_FRAME_SIZE;
+            if (compress) {
+                auto meta_info = Service::AM::GetCIAInfos(filepath);
+                if (meta_info.Succeeded()) {
+                    const auto& meta_info_val = meta_info.Unwrap();
+                    std::vector<u8> value(sizeof(Service::AM::TitleInfo));
+                    memcpy(value.data(), &meta_info_val.first, sizeof(Service::AM::TitleInfo));
+                    compress_info.default_metadata.emplace("titleinfo", value);
+                    if (meta_info_val.second) {
+                        value.resize(sizeof(Loader::SMDH));
+                        memcpy(value.data(), meta_info_val.second.get(), sizeof(Loader::SMDH));
+                        compress_info.default_metadata.emplace("smdh", value);
+                    }
+                }
+            }
+        }
+    }
+
+    if (!compress_info.is_supported) {
+        LOG_ERROR(Frontend,
+                  "Error {} file {}, the selected file is not a compatible 3DS ROM format or is "
+                  "encrypted.",
+                  compress ? "compressing" : "decompressing", filepath);
+        return {};
+    }
+    if (compress_info.is_compressed && compress) {
+        LOG_ERROR(Frontend, "Error compressing file {}, the selected file is already compressed",
+                  filepath);
+        return {};
+    }
+    if (!compress_info.is_compressed && !compress) {
+        LOG_ERROR(Frontend,
+                  "Error decompressing file {}, the selected file is already decompressed",
+                  filepath);
+        return {};
+    }
+
+    return std::pair(compress_info, frame_size);
 }
 
 } // namespace Loader

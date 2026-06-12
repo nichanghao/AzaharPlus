@@ -24,12 +24,11 @@ val abiFilter = listOf("arm64-v8a", "x86_64")
 
 val downloadedJniLibsPath = "${layout.buildDirectory.get().asFile.path}/downloadedJniLibs"
 
-@Suppress("UnstableApiUsage")
 android {
     namespace = "org.citra.citra_emu"
 
     compileSdkVersion = "android-35"
-    ndkVersion = "27.1.12297006"
+    ndkVersion = "27.3.13750724"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -63,6 +62,7 @@ android {
     defaultConfig {
         // The application ID refers to Lime3DS to allow for
         // the Play Store listing, which was originally set up for Lime3DS, to still be used.
+        // applicationId = "org.azahar_emu.azahar"
         applicationId = "io.github.lime3ds.android"
 
         minSdk = 28
@@ -81,7 +81,8 @@ android {
                     "-DENABLE_QT=0", // Don't use QT
                     "-DENABLE_SDL2=0", // Don't use SDL
                     "-DANDROID_ARM_NEON=true", // cryptopp requires Neon to work
-                    "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON" // Support Android 15 16KiB page sizes
+                    "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON", // Support Android 15 16KiB page sizes
+                    "-DENABLE_GDBSTUB=OFF", // Disable GDB stub
                 )
             }
         }
@@ -174,6 +175,7 @@ android {
         register("googlePlay") {
             dimension = "version"
             versionNameSuffix = "-googleplay"
+            // applicationId = "io.github.lime3ds.android"
         }
     }
 

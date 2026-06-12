@@ -1,5 +1,3 @@
-//FILE MODIFIED BY AzaharPlus APRIL 2025
-
 // Copyright 2017 Citra Emulator Project
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
@@ -207,21 +205,12 @@ Result TranslateCommandBuffer(Kernel::KernelSystem& kernel, Memory::MemorySystem
                              buffer->GetPtr() + Memory::CITRA_PAGE_SIZE + page_offset, size);
 
             // Map the guard pages and mapped pages at once.
-#ifdef todotodo
             auto target_address_result = dst_process->vm_manager.MapBackingMemoryToBase(
                 Memory::IPC_MAPPING_VADDR, Memory::IPC_MAPPING_SIZE, buffer,
                 static_cast<u32>(buffer->GetSize()), Kernel::MemoryState::Shared);
 
             ASSERT_MSG(target_address_result.Succeeded(), "Failed to map target address");
             target_address = target_address_result.Unwrap();
-#else
-            target_address =
-                dst_process->vm_manager
-                    .MapBackingMemoryToBase(Memory::IPC_MAPPING_VADDR, Memory::IPC_MAPPING_SIZE,
-                                            buffer, static_cast<u32>(buffer->GetSize()),
-                                            Kernel::MemoryState::Shared)
-                    .Unwrap();
-#endif
 
             // Change the permissions and state of the guard pages.
             const VAddr low_guard_address = target_address;

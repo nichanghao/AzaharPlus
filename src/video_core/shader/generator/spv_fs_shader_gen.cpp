@@ -21,6 +21,7 @@ FragmentModule::FragmentModule(const FSConfig& config_, const Profile& profile_)
     : Sirit::Module{SPIRV_VERSION_1_3}, config{config_}, profile{profile_},
       use_fragment_shader_barycentric{profile.has_fragment_shader_barycentric &&
                                       config.lighting.enable} {
+    config.ApplyProfile(profile_);
     DefineArithmeticTypes();
     DefineUniformStructs();
     DefineInterface();
@@ -71,6 +72,7 @@ void FragmentModule::Generate() {
         break;
     case TexturingRegs::FogMode::Gas:
         WriteGas();
+        // Return early due to unimplemented gas mode
         return;
     default:
         break;
@@ -195,7 +197,12 @@ void FragmentModule::WriteFog() {
 void FragmentModule::WriteGas() {
     // TODO: Implement me
     LOG_CRITICAL(Render, "Unimplemented gas mode");
-    OpKill();
+    // Replace the output color with a transparent pixel,
+    // (just discarding the pixel causes graphical issues
+    // in some MH games).
+    OpStore(color_id, ConstF32(0.f, 0.f, 0.f, 0.f));
+
+    OpReturn();
     OpFunctionEnd();
 }
 
@@ -454,7 +461,7 @@ void FragmentModule::WriteLighting() {
             const Id value{
                 get_lut_value(LightingRegs::SpotlightAttenuationSampler(light_config.num),
                               light_config.num, lighting.lut_sp.type, lighting.lut_sp.abs_input)};
-            spot_atten = OpFMul(f32_id, ConstF32(lighting.lut_sp.scale), value);
+            spot_atten = OpFMul(f32_id, ConstF32(lighting.lut_sp.GetScale()), value);
         }
 
         // If enabled, compute distance attenuation value
@@ -486,7 +493,7 @@ void FragmentModule::WriteLighting() {
             const Id value{get_lut_value(LightingRegs::LightingSampler::Distribution0,
                                          light_config.num, lighting.lut_d0.type,
                                          lighting.lut_d0.abs_input)};
-            d0_lut_value = OpFMul(f32_id, ConstF32(lighting.lut_d0.scale), value);
+            d0_lut_value = OpFMul(f32_id, ConstF32(lighting.lut_d0.GetScale()), value);
         }
 
         Id specular_0{OpVectorTimesScalar(vec_ids.Get(3), GetLightMember(0), d0_lut_value)};
@@ -503,7 +510,7 @@ void FragmentModule::WriteLighting() {
                                          light_config.num, lighting.lut_rr.type,
                                          lighting.lut_rr.abs_input)};
 
-            refl_value_r = OpFMul(f32_id, ConstF32(lighting.lut_rr.scale), value);
+            refl_value_r = OpFMul(f32_id, ConstF32(lighting.lut_rr.GetScale()), value);
         }
 
         // If enabled, lookup ReflectGreen value, otherwise, ReflectRed value is used
@@ -515,7 +522,7 @@ void FragmentModule::WriteLighting() {
                                          light_config.num, lighting.lut_rg.type,
                                          lighting.lut_rg.abs_input)};
 
-            refl_value_g = OpFMul(f32_id, ConstF32(lighting.lut_rg.scale), value);
+            refl_value_g = OpFMul(f32_id, ConstF32(lighting.lut_rg.GetScale()), value);
         }
 
         // If enabled, lookup ReflectBlue value, otherwise, ReflectRed value is used
@@ -526,7 +533,7 @@ void FragmentModule::WriteLighting() {
             const Id value{get_lut_value(LightingRegs::LightingSampler::ReflectBlue,
                                          light_config.num, lighting.lut_rb.type,
                                          lighting.lut_rb.abs_input)};
-            refl_value_b = OpFMul(f32_id, ConstF32(lighting.lut_rb.scale), value);
+            refl_value_b = OpFMul(f32_id, ConstF32(lighting.lut_rb.GetScale()), value);
         }
 
         // Specular 1 component
@@ -538,7 +545,7 @@ void FragmentModule::WriteLighting() {
             const Id value{get_lut_value(LightingRegs::LightingSampler::Distribution1,
                                          light_config.num, lighting.lut_d1.type,
                                          lighting.lut_d1.abs_input)};
-            d1_lut_value = OpFMul(f32_id, ConstF32(lighting.lut_d1.scale), value);
+            d1_lut_value = OpFMul(f32_id, ConstF32(lighting.lut_d1.GetScale()), value);
         }
 
         const Id refl_value{
@@ -559,7 +566,7 @@ void FragmentModule::WriteLighting() {
             // Lookup fresnel LUT value
             Id value{get_lut_value(LightingRegs::LightingSampler::Fresnel, light_config.num,
                                    lighting.lut_fr.type, lighting.lut_fr.abs_input)};
-            value = OpFMul(f32_id, ConstF32(lighting.lut_fr.scale), value);
+            value = OpFMul(f32_id, ConstF32(lighting.lut_fr.GetScale()), value);
 
             // Enabled for diffuse lighting alpha component
             if (lighting.enable_primary_alpha) {

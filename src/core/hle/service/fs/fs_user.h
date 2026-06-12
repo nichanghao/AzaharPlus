@@ -49,6 +49,9 @@ private:
 class FS_USER final : public ServiceFramework<FS_USER, ClientSlot> {
 public:
     explicit FS_USER(Core::System& system);
+    ~FS_USER() {
+        fs_async_worker.WaitForRequests();
+    }
 
     // On real HW this is part of FSReg (FSReg:Register). But since that module is only used by
     // loader and pm, which we HLEed, we can just directly use it here
@@ -81,6 +84,10 @@ public:
     void RegisterSecureValueBackend(const std::shared_ptr<FileSys::SecureValueBackend>& backend) {
         secure_value_backend = backend;
     }
+
+    static ResultVal<u16> GetSpecialContentIndexFromGameCard(u64 title_id, SpecialContentType type);
+    static ResultVal<u16> GetSpecialContentIndexFromTMD(MediaType media_type, u64 title_id,
+                                                        SpecialContentType type);
 
 private:
     void Initialize(Kernel::HLERequestContext& ctx);
@@ -740,10 +747,6 @@ private:
      */
     void GetSaveDataSecureValue(Kernel::HLERequestContext& ctx);
 
-    static ResultVal<u16> GetSpecialContentIndexFromGameCard(u64 title_id, SpecialContentType type);
-    static ResultVal<u16> GetSpecialContentIndexFromTMD(MediaType media_type, u64 title_id,
-                                                        SpecialContentType type);
-
     std::unordered_map<u32, ProgramInfo> program_info_map;
     std::string current_gamecard_path;
 
@@ -755,6 +758,8 @@ private:
     ArchiveManager& archives;
 
     std::shared_ptr<FileSys::SecureValueBackend> secure_value_backend;
+
+    Common::ThreadWorker fs_async_worker{1, "FSUSER_Worker"};
 
     template <class Archive>
     void serialize(Archive& ar, const unsigned int);

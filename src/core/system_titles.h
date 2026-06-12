@@ -13,7 +13,7 @@ namespace Core {
 
 constexpr u32 NUM_SYSTEM_TITLE_REGIONS = 7;
 
-enum SystemTitleSet : u32 { Minimal = 1 << 0, Old3ds = 1 << 1, New3ds = 1 << 2 };
+enum SystemTitleSet : u32 { Minimal = 1 << 0, Old3ds = 1 << 1, New3ds = 1 << 2, OldAndNew = Old3ds|New3ds };
 
 /// Returns a list of firmware title IDs for a specific set and region.
 std::vector<u64> GetSystemTitleIds(SystemTitleSet set, u32 region);

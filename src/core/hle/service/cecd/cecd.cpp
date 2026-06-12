@@ -849,12 +849,16 @@ void Module::Interface::GetCecInfoEventHandleSys(Kernel::HLERequestContext& ctx)
     LOG_WARNING(Service_CECD, "(STUBBED) called");
 }
 
-std::string Module::EncodeBase64(std::span<const u8> in) const {
+std::string Module::EncodeBase64(std::span<const u8> in) {
     using namespace CryptoPP;
     using Name::EncodingLookupArray;
     using Name::InsertLineBreaks;
     using Name::Pad;
 
+    /// String used by cecd for base64 encoding found in the sysmodule disassembly
+    const std::string base64_dict =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+-";
+		
     std::string out;
     Base64Encoder encoder;
     AlgorithmParameters params =

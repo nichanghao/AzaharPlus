@@ -1,5 +1,3 @@
-//FILE MODIFIED BY AzaharPlus APRIL 2025
-
 // Copyright Citra Emulator Project / Azahar Emulator Project
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
@@ -61,6 +59,15 @@ public:
         void GetConnectResult(Kernel::HLERequestContext& ctx);
 
         /**
+         * AC::CancelConnectAsync service function
+         *  Inputs:
+         *      1 : ProcessId Header
+         *  Outputs:
+         *      1 : Result of function, 0 on success, otherwise error code
+         */
+        void CancelConnectAsync(Kernel::HLERequestContext& ctx);
+
+        /**
          * AC::CloseAsync service function
          *  Inputs:
          *      1 : ProcessId Header
@@ -92,7 +99,7 @@ public:
          * AC::GetWifiStatus service function
          *  Outputs:
          *      1 : Result of function, 0 on success, otherwise error code
-         *      2 : Output connection type, 0 = none, 1 = Old3DS Internet, 2 = New3DS Internet.
+         *      2 : WifiStatus
          */
         void GetWifiStatus(Kernel::HLERequestContext& ctx);
 
@@ -121,6 +128,18 @@ public:
          *      2 : Infra Priority
          */
         void SetRequestEulaVersion(Kernel::HLERequestContext& ctx);
+
+        /**
+         * AC::GetNZoneBeaconNotFoundEvent service function
+         *  Inputs:
+         *      1 : ProcessId Header
+         *      2 : ProcessId
+         *      3 : Copy Handle Header
+         *      4 : Event handle, should be signaled when a Nintendo Zone beacon is not found
+         *  Outputs:
+         *      1 : Result of function, 0 on success, otherwise error code
+         */
+        void GetNZoneBeaconNotFoundEvent(Kernel::HLERequestContext& ctx);
 
         /**
          * AC::RegisterDisconnectEvent service function
@@ -171,14 +190,9 @@ protected:
     };
     enum class WifiStatus {
         STATUS_DISCONNECTED = 0,
-#ifdef todotodo
         STATUS_CONNECTED_SLOT1 = (1 << 0),
         STATUS_CONNECTED_SLOT2 = (1 << 1),
         STATUS_CONNECTED_SLOT3 = (1 << 2),
-#else
-        STATUS_CONNECTED_O3DS = 1,
-        STATUS_CONNECTED_N3DS = 2,
-#endif
     };
 
     struct ACConfig {
@@ -192,6 +206,7 @@ protected:
     std::shared_ptr<Kernel::Event> close_event;
     std::shared_ptr<Kernel::Event> connect_event;
     std::shared_ptr<Kernel::Event> disconnect_event;
+    std::shared_ptr<Kernel::Event> nintendo_zone_beacon_not_found_event;
 
 private:
     [[maybe_unused]]
