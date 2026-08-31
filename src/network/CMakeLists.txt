@@ -6,8 +6,6 @@ add_library(network STATIC EXCLUDE_FROM_ALL
     artic_base/artic_base_common.h
     network.cpp
     network.h
-    network_settings.cpp
-    network_settings.h
     packet.cpp
     packet.h
     precompiled_headers.h
@@ -27,7 +25,7 @@ if (ENABLE_WEB_SERVICE)
     target_link_libraries(network PRIVATE web_service)
 endif()
 
-target_link_libraries(network PRIVATE citra_common enet Boost::serialization httplib)
+target_link_libraries(network PRIVATE citra_common citra_core enet Boost::serialization httplib)
 
 if (CITRA_USE_PRECOMPILED_HEADERS)
     target_precompile_headers(network PRIVATE precompiled_headers.h)

@@ -1,4 +1,4 @@
-// Copyright 2017 Citra Emulator Project
+// Copyright Citra Emulator Project / Azahar Emulator Project
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
@@ -43,6 +43,9 @@ public:
      */
     void UpdateGameList(QStandardItemModel* list);
     void RetranslateUi();
+
+protected:
+    void showEvent(QShowEvent* event) override;
 
 public slots:
     /**
@@ -124,6 +127,7 @@ public slots:
     void SetFilterOwned(bool);
     void SetFilterEmpty(bool);
     void SetFilterFull(bool);
+    void SetFilterLocked(bool);
     void SetFilterSearch(const QString&);
 
 private:
@@ -131,5 +135,6 @@ private:
     bool filter_owned = false;
     bool filter_empty = false;
     bool filter_full = false;
+    bool filter_locked = false;
     QString filter_search;
 };

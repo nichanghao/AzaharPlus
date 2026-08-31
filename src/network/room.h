@@ -19,6 +19,8 @@ constexpr u16 DefaultRoomPort = 24872;
 
 constexpr u32 MaxMessageSize = 500;
 
+constexpr u32 azaharplus_network_version = 1;
+
 /// Maximum number of concurrent connections allowed to this room.
 static constexpr u32 MaxConcurrentConnections = 254;
 
@@ -75,6 +77,14 @@ enum RoomMessageTypes : u8 {
     IdModPermissionDenied,
     IdModNoSuchUser,
     IdJoinSuccessAsMod,
+	// Specific to AzaharPlus
+	idAzaharPlusSpecific = 0xff
+};
+
+enum AzaharPlusSpecificTypes : u8 {
+    IdZipPassAnnounce = 1,
+    IdZipPassUpload,
+    IdZipPassDownload,
 };
 
 /// Types of system status messages

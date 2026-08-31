@@ -15,7 +15,6 @@
 #include "common/logging/log.h"
 #include "core/hle/service/cfg/cfg.h"
 #include "network/network.h"
-#include "network/network_settings.h"
 #include "ui_lobby.h"
 #ifdef ENABLE_WEB_SERVICE
 #include "web_service/web_backend.h"
@@ -56,9 +55,9 @@ Lobby::Lobby(Core::System& system_, QWidget* parent, QStandardItemModel* list,
 
     ui->nickname->setValidator(validation.GetNickname());
     ui->nickname->setText(UISettings::values.nickname);
-    if (ui->nickname->text().isEmpty() && !NetSettings::values.citra_username.empty()) {
-        // Use Citra Web Service user name as nickname by default
-        ui->nickname->setText(QString::fromStdString(NetSettings::values.citra_username));
+    if (ui->nickname->text().isEmpty()) {
+        // Use system user name as nickname by default
+        ui->nickname->setText(QString::fromStdString(Service::CFG::GetUsername(system)));
     }
 
     // UI Buttons
@@ -67,6 +66,7 @@ Lobby::Lobby(Core::System& system_, QWidget* parent, QStandardItemModel* list,
     connect(ui->games_owned, &QCheckBox::toggled, proxy, &LobbyFilterProxyModel::SetFilterOwned);
     connect(ui->hide_empty, &QCheckBox::toggled, proxy, &LobbyFilterProxyModel::SetFilterEmpty);
     connect(ui->hide_full, &QCheckBox::toggled, proxy, &LobbyFilterProxyModel::SetFilterFull);
+    connect(ui->hide_locked, &QCheckBox::toggled, proxy, &LobbyFilterProxyModel::SetFilterLocked);
     connect(ui->room_list, &QTreeView::doubleClicked, this, &Lobby::OnJoinRoom);
     connect(ui->room_list, &QTreeView::clicked, this, &Lobby::OnExpandRoom);
 
@@ -103,6 +103,11 @@ void Lobby::UpdateGameList(QStandardItemModel* list) {
 
 void Lobby::RetranslateUi() {
     ui->retranslateUi(this);
+}
+
+void Lobby::showEvent(QShowEvent* event) {
+//    ui->nickname->setText(QString::fromStdString(Service::CFG::GetUsername(system)));
+    QDialog::showEvent(event);
 }
 
 QString Lobby::PasswordPrompt() {
@@ -160,11 +165,9 @@ void Lobby::OnJoinRoom(const QModelIndex& source) {
     QFuture<void> f = QtConcurrent::run([this, nickname, ip, port, password, verify_UID] {
         std::string token;
 #ifdef ENABLE_WEB_SERVICE
-        if (!NetSettings::values.citra_username.empty() &&
-            !NetSettings::values.citra_token.empty()) {
-            WebService::Client client(NetSettings::values.web_api_url,
-                                      NetSettings::values.citra_username,
-                                      NetSettings::values.citra_token);
+        if (!nickname.empty() && !Settings::values.network_token.GetValue().empty()) {
+            WebService::Client client(Settings::values.web_api_url.GetValue(), nickname,
+                                      Settings::values.network_token.GetValue());
             token = client.GetExternalJWT(verify_UID).returned_data;
             if (token.empty()) {
                 LOG_ERROR(WebService, "Could not get external JWT, verification may fail");
@@ -239,11 +242,15 @@ void Lobby::OnRefreshLobby() {
         }
 
         auto first_item = new LobbyItem();
+
+        QString preferred_game = room.preferred_game == "%none%"
+                                     ? tr("No Preference")
+                                     : QString::fromStdString(room.preferred_game);
+
         auto row = QList<QStandardItem*>({
             first_item,
             new LobbyItemName(room.has_password, QString::fromStdString(room.name)),
-            new LobbyItemGame(room.preferred_game_id, QString::fromStdString(room.preferred_game),
-                              smdh_icon),
+            new LobbyItemGame(room.preferred_game_id, preferred_game, smdh_icon),
             new LobbyItemHost(QString::fromStdString(room.owner), QString::fromStdString(room.ip),
                               room.port, QString::fromStdString(room.verify_UID)),
             new LobbyItemMemberList(members, room.max_player),
@@ -314,6 +321,14 @@ bool LobbyFilterProxyModel::filterAcceptsRow(int sourceRow, const QModelIndex& s
             return false;
         }
     }
+	
+	if (filter_locked) {
+        QModelIndex password_index = sourceModel()->index(sourceRow, Column::ROOM_NAME);
+		bool has_password = sourceModel()->data(password_index, LobbyItemName::PasswordRole).toBool();
+        if (has_password) {
+            return false;
+        }
+    }
 
     // filter by search parameters
     if (!filter_search.isEmpty()) {
@@ -380,6 +395,11 @@ void LobbyFilterProxyModel::SetFilterEmpty(bool filter) {
 
 void LobbyFilterProxyModel::SetFilterFull(bool filter) {
     filter_full = filter;
+    invalidate();
+}
+
+void LobbyFilterProxyModel::SetFilterLocked(bool filter) {
+    filter_locked = filter;
     invalidate();
 }
 

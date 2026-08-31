@@ -26,6 +26,7 @@
 #include "common/play_time_manager.h"
 #include "common/string_util.h"
 #include "core/loader/smdh.h"
+#include "core/hle/service/cecd/cecd.h"
 
 namespace Service::FS {
 enum class MediaType : u32;
@@ -147,6 +148,46 @@ static const std::unordered_map<UISettings::GameListIconSize, int> IconSizes{
     {UISettings::GameListIconSize::LargeIcon, 48},
 };
 
+static int getNumExtMessages(std::string cecId)
+{
+	const std::string ext_inbox_path{fmt::format("{}/zippass/inboxes/{}/", 
+				FileUtil::GetUserPath(FileUtil::UserPath::UserDir),
+				cecId)};
+	
+	FileUtil::FSTEntry data_dir;
+	std::vector<FileUtil::FSTEntry> files;
+	FileUtil::ScanDirectoryTree(ext_inbox_path, data_dir, 2048);
+	FileUtil::GetAllFilesFromNestedEntries(data_dir, files);
+	
+	return files.size();
+}
+
+static int getNumMessages(std::string cecId)
+{
+	std::string inboxPath = FileUtil::GetUserPath(FileUtil::UserPath::NANDDir)
+		+ "/data/00000000000000000000000000000000/sysdata/00010026/00000000/CEC/" 
+		+ cecId + "/InBox___";
+	
+	if (!FileUtil::IsDirectory(inboxPath))
+	{
+		return 0;
+	}
+	
+	std::string boxInfoPath = inboxPath + "/BoxInfo_____";
+	
+	if (!FileUtil::Exists(boxInfoPath))
+	{
+		return 0;
+	}
+	
+	struct Service::CECD::Module::CecBoxInfoHeader boxInfo;
+	FileUtil::IOFile bfile(boxInfoPath, "rb");
+	bfile.ReadBytes(&boxInfo, sizeof(Service::CECD::Module::CecBoxInfoHeader));
+	bfile.Close();
+	
+	return boxInfo.message_num;
+}
+
 /**
  * A specialization of GameListItem for path values.
  * This class ensures that for every full path value it holds, a correct string representation
@@ -232,8 +273,22 @@ public:
                 {UISettings::GameListText::TitleID,
                  QString::fromStdString(fmt::format("{:016X}", data(ProgramIdRole).toULongLong()))},
             };
-
-            const QString& row1 =
+			std::string streetpassPrefix;
+			std::string cecId = FileUtil::getCecId(fmt::format("{:016X}", data(ProgramIdRole).toULongLong()));
+			
+			if(cecId.length() == 8)
+			{
+				int n = getNumMessages(cecId);
+				int ext = getNumExtMessages(cecId);
+				
+				if(n > 0)
+					streetpassPrefix = "[ " + std::to_string(n) + " ]   ";
+				
+				if(ext > 0)
+					streetpassPrefix = "[ " + std::to_string(n) + " + " + std::to_string(ext) + " ]   ";
+			}
+			
+            const QString& row1 = QString::fromStdString(streetpassPrefix) +
                 display_texts.at(UISettings::values.game_list_row_1.GetValue()).simplified();
 
             if (role == SortRole)

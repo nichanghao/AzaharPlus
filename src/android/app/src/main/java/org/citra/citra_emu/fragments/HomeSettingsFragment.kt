@@ -36,8 +36,8 @@ import org.citra.citra_emu.R
 import org.citra.citra_emu.adapters.HomeSettingAdapter
 import org.citra.citra_emu.databinding.DialogSoftwareKeyboardBinding
 import org.citra.citra_emu.databinding.FragmentHomeSettingsBinding
-import org.citra.citra_emu.features.settings.model.Settings
 import org.citra.citra_emu.features.settings.SettingKeys
+import org.citra.citra_emu.features.settings.model.Settings
 import org.citra.citra_emu.features.settings.ui.SettingsActivity
 import org.citra.citra_emu.features.settings.utils.SettingsFile
 import org.citra.citra_emu.model.Game
@@ -45,11 +45,11 @@ import org.citra.citra_emu.model.HomeSetting
 import org.citra.citra_emu.ui.main.MainActivity
 import org.citra.citra_emu.utils.FileUtil
 import org.citra.citra_emu.utils.GameHelper
-import org.citra.citra_emu.utils.PermissionsHandler
-import org.citra.citra_emu.viewmodel.HomeViewModel
 import org.citra.citra_emu.utils.GpuDriverHelper
 import org.citra.citra_emu.utils.Log
+import org.citra.citra_emu.utils.PermissionsHandler
 import org.citra.citra_emu.viewmodel.DriverViewModel
+import org.citra.citra_emu.viewmodel.HomeViewModel
 
 class HomeSettingsFragment : Fragment() {
     private var _binding: FragmentHomeSettingsBinding? = null
@@ -105,44 +105,6 @@ class HomeSettingsFragment : Fragment() {
                 }
             ),
             HomeSetting(
-                R.string.artic_base_connect,
-                R.string.artic_base_connect_description,
-                R.drawable.ic_network,
-                {
-                    val inflater = LayoutInflater.from(context)
-                    val inputBinding = DialogSoftwareKeyboardBinding.inflate(inflater)
-                    var textInputValue: String = preferences.getString(SettingKeys.last_artic_base_addr(), "")!!
-
-                    inputBinding.editTextInput.setText(textInputValue)
-                    inputBinding.editTextInput.doOnTextChanged { text, _, _, _ ->
-                        textInputValue = text.toString()
-                    }
-
-                    val dialog = context?.let {
-                        MaterialAlertDialogBuilder(it)
-                            .setView(inputBinding.root)
-                            .setTitle(getString(R.string.artic_base_enter_address))
-                            .setPositiveButton(android.R.string.ok) { _, _ ->
-                                if (textInputValue.isNotEmpty()) {
-                                    preferences.edit()
-                                        .putString(SettingKeys.last_artic_base_addr(), textInputValue)
-                                        .apply()
-                                    val menu = Game(
-                                        title = getString(R.string.artic_base),
-                                        path = "articbase://$textInputValue",
-                                        filename = ""
-                                    )
-                                    val action =
-                                        HomeNavigationDirections.actionGlobalEmulationActivity(menu)
-                                    binding.root.findNavController().navigate(action)
-                                }
-                            }
-                            .setNegativeButton(android.R.string.cancel) {_, _ -> }
-                            .show()
-                    }
-                }
-            ),
-            HomeSetting(
                 R.string.multiplayer,
                 R.string.multiplayer_description,
                 R.drawable.ic_multiplayer,
@@ -172,6 +134,50 @@ class HomeSettingsFragment : Fragment() {
                     exitTransition = MaterialSharedAxis(MaterialSharedAxis.X, true)
                     parentFragmentManager.primaryNavigationFragment?.findNavController()
                         ?.navigate(R.id.action_homeSettingsFragment_to_systemFilesFragment)
+                }
+            ),
+            HomeSetting(
+                R.string.artic_base_connect,
+                R.string.artic_base_connect_description,
+                R.drawable.ic_network,
+                {
+                    val inflater = LayoutInflater.from(context)
+                    val inputBinding = DialogSoftwareKeyboardBinding.inflate(inflater)
+                    var textInputValue: String = preferences.getString(
+                        SettingKeys.last_artic_base_addr(),
+                        ""
+                    )!!
+
+                    inputBinding.editTextInput.setText(textInputValue)
+                    inputBinding.editTextInput.doOnTextChanged { text, _, _, _ ->
+                        textInputValue = text.toString()
+                    }
+
+                    val dialog = context?.let {
+                        MaterialAlertDialogBuilder(it)
+                            .setView(inputBinding.root)
+                            .setTitle(getString(R.string.artic_base_enter_address))
+                            .setPositiveButton(android.R.string.ok) { _, _ ->
+                                if (textInputValue.isNotEmpty()) {
+                                    preferences.edit()
+                                        .putString(
+                                            SettingKeys.last_artic_base_addr(),
+                                            textInputValue
+                                        )
+                                        .apply()
+                                    val menu = Game(
+                                        title = getString(R.string.artic_base),
+                                        path = "articbase://$textInputValue",
+                                        filename = ""
+                                    )
+                                    val action =
+                                        HomeNavigationDirections.actionGlobalEmulationActivity(menu)
+                                    binding.root.findNavController().navigate(action)
+                                }
+                            }
+                            .setNegativeButton(android.R.string.cancel) { _, _ -> }
+                            .show()
+                    }
                 }
             ),
             HomeSetting(
@@ -315,37 +321,36 @@ class HomeSettingsFragment : Fragment() {
         }
     }
 
-    private fun setInsets() =
-        ViewCompat.setOnApplyWindowInsetsListener(
-            binding.root
-        ) { view: View, windowInsets: WindowInsetsCompat ->
-            val barInsets = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars())
-            val cutoutInsets = windowInsets.getInsets(WindowInsetsCompat.Type.displayCutout())
-            val spacingNavigation = resources.getDimensionPixelSize(R.dimen.spacing_navigation)
-            val spacingNavigationRail =
-                resources.getDimensionPixelSize(R.dimen.spacing_navigation_rail)
+    private fun setInsets() = ViewCompat.setOnApplyWindowInsetsListener(
+        binding.root
+    ) { view: View, windowInsets: WindowInsetsCompat ->
+        val barInsets = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars())
+        val cutoutInsets = windowInsets.getInsets(WindowInsetsCompat.Type.displayCutout())
+        val spacingNavigation = resources.getDimensionPixelSize(R.dimen.spacing_navigation)
+        val spacingNavigationRail =
+            resources.getDimensionPixelSize(R.dimen.spacing_navigation_rail)
 
-            val leftInsets = barInsets.left + cutoutInsets.left
-            val rightInsets = barInsets.right + cutoutInsets.right
+        val leftInsets = barInsets.left + cutoutInsets.left
+        val rightInsets = barInsets.right + cutoutInsets.right
 
-            binding.scrollViewSettings.updatePadding(
-                top = barInsets.top,
-                bottom = barInsets.bottom
-            )
+        binding.scrollViewSettings.updatePadding(
+            top = barInsets.top,
+            bottom = barInsets.bottom
+        )
 
-            val mlpScrollSettings = binding.scrollViewSettings.layoutParams as MarginLayoutParams
-            mlpScrollSettings.leftMargin = leftInsets
-            mlpScrollSettings.rightMargin = rightInsets
-            binding.scrollViewSettings.layoutParams = mlpScrollSettings
+        val mlpScrollSettings = binding.scrollViewSettings.layoutParams as MarginLayoutParams
+        mlpScrollSettings.leftMargin = leftInsets
+        mlpScrollSettings.rightMargin = rightInsets
+        binding.scrollViewSettings.layoutParams = mlpScrollSettings
 
-            binding.linearLayoutSettings.updatePadding(bottom = spacingNavigation)
+        binding.linearLayoutSettings.updatePadding(bottom = spacingNavigation)
 
-            if (ViewCompat.getLayoutDirection(view) == ViewCompat.LAYOUT_DIRECTION_LTR) {
-                binding.linearLayoutSettings.updatePadding(left = spacingNavigationRail)
-            } else {
-                binding.linearLayoutSettings.updatePadding(right = spacingNavigationRail)
-            }
-
-            windowInsets
+        if (ViewCompat.getLayoutDirection(view) == ViewCompat.LAYOUT_DIRECTION_LTR) {
+            binding.linearLayoutSettings.updatePadding(left = spacingNavigationRail)
+        } else {
+            binding.linearLayoutSettings.updatePadding(right = spacingNavigationRail)
         }
+
+        windowInsets
+    }
 }

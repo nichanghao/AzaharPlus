@@ -1,6 +1,6 @@
-// Copyright 2025 Azahar Project
+// Copyright Citra Emulator Project / Azahar Emulator Project
 // Licensed under GPLv2 or any later version
-// Refer to the license.txt file included
+// Refer to the license.txt file included.
 
 package org.citra.citra_emu.dialogs
 
@@ -22,12 +22,11 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.textfield.TextInputEditText
 import info.debatty.java.stringsimilarity.Jaccard
 import info.debatty.java.stringsimilarity.JaroWinkler
+import java.util.Locale
 import org.citra.citra_emu.R
 import org.citra.citra_emu.databinding.DialogLobbyBrowserBinding
 import org.citra.citra_emu.databinding.ItemLobbyRoomBinding
-import org.citra.citra_emu.utils.CompatUtils
 import org.citra.citra_emu.utils.NetPlayManager
-import java.util.Locale
 
 class LobbyBrowser(context: Context) : BottomSheetDialog(context) {
     private lateinit var binding: DialogLobbyBrowserBinding
@@ -53,6 +52,9 @@ class LobbyBrowser(context: Context) : BottomSheetDialog(context) {
         setupRefreshButton()
         refreshRoomList()
         setupSearchBar()
+        setOnDismissListener {
+            NetPlayDialog(context).show()
+        }
     }
 
     private fun setupRecyclerView() {
@@ -74,8 +76,9 @@ class LobbyBrowser(context: Context) : BottomSheetDialog(context) {
     }
 
     private fun setupSearchBar() {
-        binding.chipGroup.setOnCheckedStateChangeListener { _, _ -> adapter.filterAndSearch() }
-
+        binding.checkEmpty.setOnClickListener { _ -> adapter.filterAndSearch() }
+        binding.checkFull.setOnClickListener { _ -> adapter.filterAndSearch() }
+        binding.checkLocked.setOnClickListener { _ -> adapter.filterAndSearch() }
 
         binding.searchText.doOnTextChanged { text: CharSequence?, _: Int, _: Int, _: Int ->
             if (text.toString().isNotEmpty()) {
@@ -116,14 +119,12 @@ class LobbyBrowser(context: Context) : BottomSheetDialog(context) {
         val dialogView = LayoutInflater.from(context).inflate(R.layout.dialog_password_input, null)
         val passwordInput = dialogView.findViewById<TextInputEditText>(R.id.password_input)
 
-        MaterialAlertDialogBuilder(context)
-            .setTitle(context.getString(R.string.multiplayer_password_required))
-            .setView(dialogView)
-            .setPositiveButton(R.string.multiplayer_join_room) { _, _ ->
+        MaterialAlertDialogBuilder(
+            context
+        ).setTitle(context.getString(R.string.multiplayer_password_required))
+            .setView(dialogView).setPositiveButton(R.string.multiplayer_join_room) { _, _ ->
                 joinRoom(room, passwordInput.text.toString())
-            }
-            .setNegativeButton(android.R.string.cancel, null)
-            .show()
+            }.setNegativeButton(android.R.string.cancel, null).show()
     }
 
     private fun joinRoom(room: NetPlayManager.RoomInfo, password: String) {
@@ -135,7 +136,6 @@ class LobbyBrowser(context: Context) : BottomSheetDialog(context) {
             handler.post {
                 if (result == 0) {
                     dismiss()
-                    NetPlayDialog(context).show()
                 }
             }
         }.start()
@@ -191,32 +191,20 @@ class LobbyBrowser(context: Context) : BottomSheetDialog(context) {
         }
 
         fun filterAndSearch() {
-            if (binding.searchText.text.toString().isEmpty() &&
-                binding.chipGroup.checkedChipId == View.NO_ID
-            ) {
-                adapter.updateRooms(NetPlayManager.getPublicRooms())
-                return
-            }
-
             val baseList = NetPlayManager.getPublicRooms()
-            val filteredList: List<NetPlayManager.RoomInfo> =
-                when (binding.chipGroup.checkedChipId) {
-                    R.id.chip_hide_full -> {
-                        baseList.filter { it.members.size < it.maxPlayers }
-                    }
+            var filteredList: List<NetPlayManager.RoomInfo> = baseList
 
-                    R.id.chip_hide_empty -> {
-                        baseList.filter {
-                            it.members.isNotEmpty()
-                        }
-                    }
-
-                    else -> baseList
-                }
-
-            if (binding.searchText.text.toString().isEmpty() &&
-                binding.chipGroup.checkedChipId != View.NO_ID
-            ) {
+            if(binding.checkEmpty.isChecked){
+                filteredList = filteredList.filter { it.members.isNotEmpty() }
+            }
+            if(binding.checkFull.isChecked){
+                filteredList = filteredList.filter { it.members.size < it.maxPlayers }
+            }
+            if(binding.checkLocked.isChecked){
+                filteredList = filteredList.filter { !it.hasPassword }
+            }
+            
+            if (binding.searchText.text.toString().isEmpty()) {
                 adapter.updateRooms(filteredList)
                 return
             }
@@ -224,19 +212,18 @@ class LobbyBrowser(context: Context) : BottomSheetDialog(context) {
             val searchTerm = binding.searchText.text.toString().lowercase(Locale.getDefault())
             val searchAlgorithm = if (searchTerm.length > 1) Jaccard(2) else JaroWinkler()
             val sortedList: List<NetPlayManager.RoomInfo> = filteredList.mapNotNull { room ->
-                    val roomName = room.name.lowercase(Locale.getDefault())
+                val roomName = room.name.lowercase(Locale.getDefault())
 
-                    val score = searchAlgorithm.similarity(roomName, searchTerm)
-                    if (score > 0.03) {
-                        ScoreItem(score, room)
-                    } else {
-                        null
-                    }
-                }.sortedByDescending { it ->
-                    it.score
-                }.map { it.item }
+                val score = searchAlgorithm.similarity(roomName, searchTerm)
+                if (score > 0.03) {
+                    ScoreItem(score, room)
+                } else {
+                    null
+                }
+            }.sortedByDescending { it ->
+                it.score
+            }.map { it.item }
             adapter.updateRooms(sortedList)
-
         }
     }
 
